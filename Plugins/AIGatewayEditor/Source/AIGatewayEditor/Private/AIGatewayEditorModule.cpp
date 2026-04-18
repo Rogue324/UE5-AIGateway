@@ -42,7 +42,7 @@ void FAIGatewayEditorModule::RegisterMenus()
     Section.AddMenuEntry(
         "OpenAIGatewayTab",
         LOCTEXT("OpenAIGatewayTabLabel", "AI Gateway"),
-        LOCTEXT("OpenAIGatewayTabTooltip", "打开 AI Gateway 聊天窗口"),
+        LOCTEXT("OpenAIGatewayTabTooltip", "Open the AI Gateway chat panel."),
         FSlateIcon(),
         FUIAction(FExecuteAction::CreateLambda([]
         {

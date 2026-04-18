@@ -20,7 +20,7 @@ public:
     UPROPERTY(Config, EditAnywhere, Category = "Connection", meta = (DisplayName = "API Key"))
     FString ApiKey;
 
-    UPROPERTY(Config, EditAnywhere, Category = "Request", meta = (DisplayName = "Chat Endpoint", ToolTip = "会拼接到 Base URL 之后，例如 /chat/completions"))
+    UPROPERTY(Config, EditAnywhere, Category = "Request", meta = (DisplayName = "Chat Endpoint", ToolTip = "Appended to Base URL, for example /chat/completions"))
     FString ChatEndpoint;
 
     UPROPERTY(Config, EditAnywhere, Category = "Request", meta = (DisplayName = "Model"))

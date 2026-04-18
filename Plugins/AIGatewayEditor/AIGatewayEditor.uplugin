@@ -1,0 +1,18 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "0.1.0",
+  "FriendlyName": "AI Gateway Editor",
+  "Description": "在UE5编辑器中配置大模型并进行聊天的编辑器插件。",
+  "Category": "Editor",
+  "CreatedBy": "UE5-AIGateway",
+  "CanContainContent": false,
+  "IsBetaVersion": true,
+  "Modules": [
+    {
+      "Name": "AIGatewayEditor",
+      "Type": "Editor",
+      "LoadingPhase": "Default"
+    }
+  ]
+}

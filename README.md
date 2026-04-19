@@ -1,5 +1,7 @@
 # AI Gateway Editor for Unreal Engine 5
 
+[中文说明 / Chinese README](README.zh-CN.md)
+
 AI Gateway Editor is an experimental Unreal Engine 5 editor plugin that brings an OpenAI-compatible chat experience directly into the UE editor and lets the model operate native editor tooling in-process.
 
 This project now incorporates UE-side code, ideas, and tool taxonomy adapted from the [`soft-ue-cli`](https://github.com/softdaddy-o/soft-ue-cli) repository. In particular, the integrated `SoftUEBridge` and `SoftUEBridgeEditor` modules in this plugin are part of the Unreal-side tooling foundation used to expose editor operations to the model.

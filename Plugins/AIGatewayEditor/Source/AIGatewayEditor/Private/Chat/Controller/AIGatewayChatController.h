@@ -28,13 +28,14 @@ public:
     FSimpleMulticastDelegate& OnStateChanged();
 
 private:
-    static constexpr int32 MaxToolRounds = 8;
-
     void BroadcastStateChanged();
     bool CanSendRequest() const;
     bool CanEditSessions() const;
     bool IsAwaitingToolConfirmation() const;
     bool IsGeneratingTitle() const;
+    bool ShouldDisplayConversationMessage(const FAIGatewayChatMessage& Message) const;
+    int32 GetConfiguredMaxToolRounds() const;
+    bool ShouldShowToolActivityInChat() const;
 
     FAIGatewayChatSession* GetActiveSession();
     const FAIGatewayChatSession* GetActiveSession() const;
@@ -91,6 +92,8 @@ private:
 
     FString ExtractErrorMessage(const FString& ResponseBody) const;
     FString FormatToolArgumentsSummary(const FAIGatewayPendingToolCall& ToolCall) const;
+    void AppendToolCallMessages(const TArray<FAIGatewayPendingToolCall>& ToolCalls);
+    void AppendToolResultMessage(const FAIGatewayPendingToolCall& ToolCall, const FAIGatewayToolResult& Result);
     FString GetPendingToolApprovalPrompt() const;
     FString GetSendButtonText() const;
 

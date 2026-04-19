@@ -2,6 +2,8 @@
 
 AI Gateway Editor is an experimental Unreal Engine 5 editor plugin that brings an OpenAI-compatible chat experience directly into the UE editor and lets the model operate native editor tooling in-process.
 
+This project now incorporates UE-side code, ideas, and tool taxonomy adapted from the [`soft-ue-cli`](https://github.com/softdaddy-o/soft-ue-cli) repository. In particular, the integrated `SoftUEBridge` and `SoftUEBridgeEditor` modules in this plugin are part of the Unreal-side tooling foundation used to expose editor operations to the model.
+
 Instead of acting as a simple chat window, the plugin turns the editor into an AI-assisted workspace:
 
 - Chat with any OpenAI-compatible `/chat/completions` gateway
@@ -11,6 +13,12 @@ Instead of acting as a simple chat window, the plugin turns the editor into an A
 - Let the model call native Unreal editor tools through OpenAI-style `tools` / `tool_calls`
 - Approve sensitive actions inline before they run
 - Use the same panel to inspect, query, and modify UE editor state
+
+## Screenshot
+
+![AI Gateway chat panel](docs/images/aigateway-chat-panel.png)
+
+The screenshot below shows the in-editor chat panel with multi-session tabs, markdown-rendered assistant output, and the docked composer area inside Unreal Editor.
 
 ## What This Plugin Does
 
@@ -23,6 +31,18 @@ At a high level, the plugin combines three things:
 This means you can open a panel inside Unreal Editor, ask the model to inspect the current level, query assets, work with Blueprints, control PIE, or perform other editor tasks, and the plugin will execute supported operations directly inside the editor process.
 
 There is no required external MCP sidecar in the current in-editor workflow. The tool runtime is hosted inside the plugin and bridges to Unreal-native functionality.
+
+## Upstream Reference and Reuse
+
+This repository is not a clean-room implementation from scratch.
+
+It explicitly reuses and adapts Unreal-related code and design ideas from [`soft-ue-cli`](https://github.com/softdaddy-o/soft-ue-cli), especially for:
+
+- UE tool taxonomy and naming conventions
+- bridge-side editor operation patterns
+- native Unreal tool exposure through `SoftUEBridge` and `SoftUEBridgeEditor`
+
+In the current version, the Python CLI and external MCP server workflow from that project are not the primary runtime path here. Instead, the Unreal-side functionality has been integrated into this plugin so the editor can execute tools in-process.
 
 ## Key Features
 
@@ -233,9 +253,9 @@ The plugin has been refactored so the main panel is no longer a single monolithi
 - `AIGatewayEditor`
   - The chat UI, chat controller, session persistence, gateway integration, and tool runtime wrapper
 - `SoftUEBridge`
-  - Unreal-facing bridge functionality used to expose editor operations
+  - Unreal-facing bridge functionality used to expose editor operations, derived from the integrated `soft-ue-cli` UE-side bridge work
 - `SoftUEBridgeEditor`
-  - Editor-specific tool implementations and registry integration
+  - Editor-specific tool implementations and registry integration, based on the integrated `soft-ue-cli` Unreal tooling side
 
 ### Chat System Structure
 
@@ -275,6 +295,11 @@ Key paths:
 
 - `Plugins/AIGatewayEditor`
 - `Plugins/AIGatewayEditor/Source/AIGatewayEditor`
+- `Plugins/AIGatewayEditor/Source/SoftUEBridge`
+- `Plugins/AIGatewayEditor/Source/SoftUEBridgeEditor`
+
+If you are looking for the code integrated from `soft-ue-cli`, the most relevant areas are:
+
 - `Plugins/AIGatewayEditor/Source/SoftUEBridge`
 - `Plugins/AIGatewayEditor/Source/SoftUEBridgeEditor`
 

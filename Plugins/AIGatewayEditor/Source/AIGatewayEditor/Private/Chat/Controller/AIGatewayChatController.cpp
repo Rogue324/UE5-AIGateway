@@ -53,12 +53,6 @@ namespace
         return Text.Left(MaxLength) + TEXT("...");
     }
 
-    bool ShouldDisplayConversationMessage(const FAIGatewayChatMessage& Message)
-    {
-        return !Message.Role.Equals(TEXT("Tool"), ESearchCase::IgnoreCase) &&
-            !Message.Role.Equals(TEXT("Tool Result"), ESearchCase::IgnoreCase);
-    }
-
     FString GetFirstConversationMessageByRole(const FAIGatewayChatSession& Session, const FString& Role)
     {
         for (const FAIGatewayChatMessage& Message : Session.ConversationMessages)
@@ -281,6 +275,13 @@ void FAIGatewayChatController::BroadcastStateChanged()
     StateChangedDelegate.Broadcast();
 }
 
+bool FAIGatewayChatController::ShouldDisplayConversationMessage(const FAIGatewayChatMessage& Message) const
+{
+    return ShouldShowToolActivityInChat() ||
+        (!Message.Role.Equals(TEXT("Tool"), ESearchCase::IgnoreCase) &&
+            !Message.Role.Equals(TEXT("Tool Result"), ESearchCase::IgnoreCase));
+}
+
 bool FAIGatewayChatController::CanSendRequest() const
 {
     return GetActiveSession() != nullptr && !bIsSending && !IsAwaitingToolConfirmation() && !IsGeneratingTitle();
@@ -300,6 +301,16 @@ bool FAIGatewayChatController::IsAwaitingToolConfirmation() const
 bool FAIGatewayChatController::IsGeneratingTitle() const
 {
     return false;
+}
+
+int32 FAIGatewayChatController::GetConfiguredMaxToolRounds() const
+{
+    return FMath::Clamp(GetDefault<UAIGatewayEditorSettings>()->MaxToolRounds, 1, 64);
+}
+
+bool FAIGatewayChatController::ShouldShowToolActivityInChat() const
+{
+    return GetDefault<UAIGatewayEditorSettings>()->bShowToolActivityInChat;
 }
 
 FAIGatewayChatSession* FAIGatewayChatController::GetActiveSession()
@@ -716,9 +727,14 @@ void FAIGatewayChatController::ExecuteNextPendingToolCall()
         Session->PendingToolCallIndex = INDEX_NONE;
         Session->bAwaitingToolConfirmation = false;
 
-        if (Session->CurrentToolRound + 1 >= MaxToolRounds)
+        const int32 ConfiguredMaxToolRounds = GetConfiguredMaxToolRounds();
+        if (Session->CurrentToolRound + 1 >= ConfiguredMaxToolRounds)
         {
-            FinishTurnWithError(TEXT("Stopped after the maximum number of tool rounds. The model did not finish within 8 tool loops."), true);
+            FinishTurnWithError(
+                FString::Printf(
+                    TEXT("Stopped after the maximum number of tool rounds. The model did not finish within %d tool loops."),
+                    ConfiguredMaxToolRounds),
+                true);
             return;
         }
 
@@ -734,7 +750,9 @@ void FAIGatewayChatController::ExecuteNextPendingToolCall()
     const FAIGatewayToolDefinition* Definition = FAIGatewayToolRuntime::Get().FindDefinition(ToolCall.Name);
     if (Definition == nullptr)
     {
-        AddRequestMessage(BuildToolResultMessageObject(ToolCall.Id, FAIGatewayToolResult::Error(FString::Printf(TEXT("Unknown tool '%s'."), *ToolCall.Name)).ToMessageContent()));
+        const FAIGatewayToolResult Result = FAIGatewayToolResult::Error(FString::Printf(TEXT("Unknown tool '%s'."), *ToolCall.Name));
+        AddRequestMessage(BuildToolResultMessageObject(ToolCall.Id, Result.ToMessageContent()));
+        AppendToolResultMessage(ToolCall, Result);
         PersistActiveSession();
         ++Session->PendingToolCallIndex;
         ExecuteNextPendingToolCall();
@@ -767,6 +785,7 @@ void FAIGatewayChatController::ExecuteCurrentPendingToolCall(bool bApproved)
         : FAIGatewayToolResult::Rejected(TEXT("The user rejected this tool call."));
 
     AddRequestMessage(BuildToolResultMessageObject(ToolCall.Id, Result.ToMessageContent()));
+    AppendToolResultMessage(ToolCall, Result);
     StatusMessage = Result.Summary;
     PersistActiveSession();
     BroadcastStateChanged();
@@ -884,6 +903,7 @@ void FAIGatewayChatController::HandleChatResponse(const FAIGatewayChatServiceRes
         }
 
         AddRequestMessage(BuildAssistantMessageObject(ParsedAssistantContent, ParsedToolCalls));
+        AppendToolCallMessages(ParsedToolCalls);
         Session->PendingToolCalls = ParsedToolCalls;
         Session->PendingToolCallIndex = 0;
         PersistActiveSession();
@@ -1268,6 +1288,34 @@ FString FAIGatewayChatController::FormatToolArgumentsSummary(const FAIGatewayPen
     }
 
     return Summary;
+}
+
+void FAIGatewayChatController::AppendToolCallMessages(const TArray<FAIGatewayPendingToolCall>& ToolCalls)
+{
+    if (!ShouldShowToolActivityInChat())
+    {
+        return;
+    }
+
+    for (const FAIGatewayPendingToolCall& ToolCall : ToolCalls)
+    {
+        AppendMessage(
+            TEXT("Tool"),
+            FString::Printf(TEXT("Requested `%s` with arguments:\n```json\n%s\n```"), *ToolCall.Name, *FormatToolArgumentsSummary(ToolCall)));
+    }
+}
+
+void FAIGatewayChatController::AppendToolResultMessage(const FAIGatewayPendingToolCall& ToolCall, const FAIGatewayToolResult& Result)
+{
+    if (!ShouldShowToolActivityInChat())
+    {
+        return;
+    }
+
+    const FString StatusText = Result.bSuccess ? TEXT("Success") : (Result.bWasRejected ? TEXT("Rejected") : TEXT("Error"));
+    AppendMessage(
+        TEXT("Tool Result"),
+        FString::Printf(TEXT("`%s` finished with status: %s\n\n%s"), *ToolCall.Name, *StatusText, *Result.Summary));
 }
 
 FString FAIGatewayChatController::GetPendingToolApprovalPrompt() const

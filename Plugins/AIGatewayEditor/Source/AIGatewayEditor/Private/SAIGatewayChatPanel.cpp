@@ -11,6 +11,7 @@
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SSeparator.h"
+#include "Widgets/Layout/SSplitter.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 
@@ -92,69 +93,77 @@ void SAIGatewayChatPanel::Construct(const FArguments& InArgs)
         ]
 
         + SVerticalBox::Slot()
-        .FillHeight(0.58f)
-        .Padding(8.0f, 4.0f)
+        .FillHeight(1.0f)
+        .Padding(8.0f, 4.0f, 8.0f, 4.0f)
         [
-            SNew(SBorder)
-            .Padding(8.0f)
+            SNew(SSplitter)
+            .Orientation(Orient_Vertical)
+
+            + SSplitter::Slot()
+            .Value(0.62f)
+            .MinSize(180.0f)
             [
-                SNew(SVerticalBox)
-
-                + SVerticalBox::Slot()
-                .AutoHeight()
-                .Padding(0.0f, 0.0f, 0.0f, 8.0f)
+                SNew(SBorder)
+                .Padding(8.0f)
                 [
-                    SAssignNew(SessionTabBar, SAIGatewaySessionTabBar)
-                    .OnNewSessionRequested(FOnAIGatewayNewSessionRequested::CreateLambda([this]()
-                    {
-                        if (ChatController.IsValid())
-                        {
-                            ChatController->CreateSession();
-                        }
-                    }))
-                    .OnSessionSelected(FOnAIGatewaySessionSelected::CreateLambda([this](const FString& SessionId)
-                    {
-                        if (ChatController.IsValid())
-                        {
-                            ChatController->ActivateSession(SessionId);
-                        }
-                    }))
-                    .OnSessionClosed(FOnAIGatewaySessionClosed::CreateLambda([this](const FString& SessionId)
-                    {
-                        if (ChatController.IsValid())
-                        {
-                            ChatController->CloseSession(SessionId);
-                        }
-                    }))
-                ]
+                    SNew(SVerticalBox)
 
-                + SVerticalBox::Slot()
-                .FillHeight(1.0f)
-                [
-                    SAssignNew(ConversationView, SAIGatewayConversationView)
+                    + SVerticalBox::Slot()
+                    .AutoHeight()
+                    .Padding(0.0f, 0.0f, 0.0f, 8.0f)
+                    [
+                        SAssignNew(SessionTabBar, SAIGatewaySessionTabBar)
+                        .OnNewSessionRequested(FOnAIGatewayNewSessionRequested::CreateLambda([this]()
+                        {
+                            if (ChatController.IsValid())
+                            {
+                                ChatController->CreateSession();
+                            }
+                        }))
+                        .OnSessionSelected(FOnAIGatewaySessionSelected::CreateLambda([this](const FString& SessionId)
+                        {
+                            if (ChatController.IsValid())
+                            {
+                                ChatController->ActivateSession(SessionId);
+                            }
+                        }))
+                        .OnSessionClosed(FOnAIGatewaySessionClosed::CreateLambda([this](const FString& SessionId)
+                        {
+                            if (ChatController.IsValid())
+                            {
+                                ChatController->CloseSession(SessionId);
+                            }
+                        }))
+                    ]
+
+                    + SVerticalBox::Slot()
+                    .FillHeight(1.0f)
+                    [
+                        SAssignNew(ConversationView, SAIGatewayConversationView)
+                    ]
                 ]
             ]
-        ]
 
-        + SVerticalBox::Slot()
-        .FillHeight(0.42f)
-        .Padding(8.0f, 6.0f, 8.0f, 4.0f)
-        [
-            SAssignNew(Composer, SAIGatewayComposer)
-            .OnDraftChanged(FOnAIGatewayDraftChanged::CreateLambda([this](const FString& DraftText)
-            {
-                if (ChatController.IsValid())
+            + SSplitter::Slot()
+            .Value(0.38f)
+            .MinSize(140.0f)
+            [
+                SAssignNew(Composer, SAIGatewayComposer)
+                .OnDraftChanged(FOnAIGatewayDraftChanged::CreateLambda([this](const FString& DraftText)
                 {
-                    ChatController->UpdateDraft(DraftText);
-                }
-            }))
-            .OnSendRequested(FOnAIGatewaySendRequested::CreateLambda([this]()
-            {
-                if (ChatController.IsValid())
+                    if (ChatController.IsValid())
+                    {
+                        ChatController->UpdateDraft(DraftText);
+                    }
+                }))
+                .OnSendRequested(FOnAIGatewaySendRequested::CreateLambda([this]()
                 {
-                    ChatController->SubmitPrompt();
-                }
-            }))
+                    if (ChatController.IsValid())
+                    {
+                        ChatController->SubmitPrompt();
+                    }
+                }))
+            ]
         ]
 
         + SVerticalBox::Slot()

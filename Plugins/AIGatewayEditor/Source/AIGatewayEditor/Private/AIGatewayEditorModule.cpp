@@ -2,6 +2,7 @@
 
 #include "LevelEditor.h"
 #include "SAIGatewayChatPanel.h"
+#include "Tools/AIGatewayToolRuntime.h"
 #include "ToolMenus.h"
 #include "Widgets/Docking/SDockTab.h"
 
@@ -11,6 +12,8 @@ const FName FAIGatewayEditorModule::AIGatewayTabName(TEXT("AIGatewayChatTab"));
 
 void FAIGatewayEditorModule::StartupModule()
 {
+    FAIGatewayToolRuntime::Get().Startup();
+
     FGlobalTabmanager::Get()->RegisterNomadTabSpawner(
         AIGatewayTabName,
         FOnSpawnTab::CreateRaw(this, &FAIGatewayEditorModule::SpawnAIGatewayTab))
@@ -23,6 +26,8 @@ void FAIGatewayEditorModule::StartupModule()
 
 void FAIGatewayEditorModule::ShutdownModule()
 {
+    FAIGatewayToolRuntime::Get().Shutdown();
+
     UToolMenus::UnRegisterStartupCallback(this);
     UToolMenus::UnregisterOwner(this);
 
@@ -48,6 +53,19 @@ void FAIGatewayEditorModule::RegisterMenus()
         {
             FGlobalTabmanager::Get()->TryInvokeTab(FAIGatewayEditorModule::AIGatewayTabName);
         })));
+
+    UToolMenu* PlayToolbarMenu = UToolMenus::Get()->ExtendMenu("LevelEditor.LevelEditorToolBar.PlayToolBar");
+    FToolMenuSection& PlayToolbarSection = PlayToolbarMenu->FindOrAddSection("PluginTools");
+
+    PlayToolbarSection.AddEntry(FToolMenuEntry::InitToolBarButton(
+        "OpenAIGatewayToolbarButton",
+        FUIAction(FExecuteAction::CreateLambda([]
+        {
+            FGlobalTabmanager::Get()->TryInvokeTab(FAIGatewayEditorModule::AIGatewayTabName);
+        })),
+        LOCTEXT("OpenAIGatewayToolbarLabel", "AI Gateway"),
+        LOCTEXT("OpenAIGatewayToolbarTooltip", "Open the AI Gateway chat panel."),
+        FSlateIcon()));
 }
 
 TSharedRef<SDockTab> FAIGatewayEditorModule::SpawnAIGatewayTab(const FSpawnTabArgs& SpawnTabArgs)

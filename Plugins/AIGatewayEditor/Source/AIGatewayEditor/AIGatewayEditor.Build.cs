@@ -18,13 +18,14 @@ public class AIGatewayEditor : ModuleRules
             "ApplicationCore",
             "DeveloperSettings",
             "EditorStyle",
-            "Http",
+            "HTTP",
             "InputCore",
             "Json",
             "JsonUtilities",
             "Projects",
             "Slate",
             "SlateCore",
+            "SoftUEBridge",
             "ToolMenus",
             "UnrealEd"
         });

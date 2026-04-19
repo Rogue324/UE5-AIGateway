@@ -1,0 +1,681 @@
+// Copyright soft-ue-expert. All Rights Reserved.
+
+#include "Tools/Widget/WidgetBlueprintTool.h"
+#include "Tools/Widget/WidgetToolUtils.h"
+#include "WidgetBlueprint.h"
+#include "Blueprint/WidgetTree.h"
+#include "Blueprint/WidgetBlueprintGeneratedClass.h"
+#include "Components/Widget.h"
+#include "Components/PanelWidget.h"
+#include "Components/PanelSlot.h"
+#include "Components/NamedSlot.h"
+#include "Binding/DynamicPropertyPath.h"
+#include "Animation/WidgetAnimation.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "UObject/SoftObjectPath.h"
+#include "UObject/SoftObjectPtr.h"
+#include "UObject/UnrealType.h"
+#include "MovieScene.h"
+#include "InputMappingContext.h"
+#include "InputAction.h"
+#include "InputModifiers.h"
+#include "InputTriggers.h"
+#include "SoftUEBridgeEditorModule.h"
+
+TMap<FString, FBridgeSchemaProperty> UWidgetBlueprintTool::GetInputSchema() const
+{
+	TMap<FString, FBridgeSchemaProperty> Schema;
+
+	FBridgeSchemaProperty AssetPath;
+	AssetPath.Type = TEXT("string");
+	AssetPath.Description = TEXT("Asset path to the Widget Blueprint (e.g., /Game/UI/WBP_MainMenu)");
+	AssetPath.bRequired = true;
+	Schema.Add(TEXT("asset_path"), AssetPath);
+
+	FBridgeSchemaProperty IncludeDefaults;
+	IncludeDefaults.Type = TEXT("boolean");
+	IncludeDefaults.Description = TEXT("Include widget property default values (default: false)");
+	IncludeDefaults.bRequired = false;
+	Schema.Add(TEXT("include_defaults"), IncludeDefaults);
+
+	FBridgeSchemaProperty DepthLimit;
+	DepthLimit.Type = TEXT("integer");
+	DepthLimit.Description = TEXT("Maximum hierarchy depth to traverse (-1 for unlimited, default: -1)");
+	DepthLimit.bRequired = false;
+	Schema.Add(TEXT("depth_limit"), DepthLimit);
+
+	FBridgeSchemaProperty IncludeBindings;
+	IncludeBindings.Type = TEXT("boolean");
+	IncludeBindings.Description = TEXT("Include property binding information (default: true)");
+	IncludeBindings.bRequired = false;
+	Schema.Add(TEXT("include_bindings"), IncludeBindings);
+
+	return Schema;
+}
+
+FBridgeToolResult UWidgetBlueprintTool::Execute(
+	const TSharedPtr<FJsonObject>& Arguments,
+	const FBridgeToolContext& Context)
+{
+	FString AssetPath;
+	if (!GetStringArg(Arguments, TEXT("asset_path"), AssetPath))
+	{
+		return FBridgeToolResult::Error(TEXT("Missing required parameter: asset_path"));
+	}
+
+	bool bIncludeDefaults = GetBoolArgOrDefault(Arguments, TEXT("include_defaults"), false);
+	int32 DepthLimit = GetIntArgOrDefault(Arguments, TEXT("depth_limit"), -1);
+	bool bIncludeBindings = GetBoolArgOrDefault(Arguments, TEXT("include_bindings"), true);
+
+	UE_LOG(LogSoftUEBridgeEditor, Log, TEXT("inspect-widget-blueprint: path='%s', depth_limit=%d"),
+		*AssetPath, DepthLimit);
+
+	// Load the Widget Blueprint
+	UWidgetBlueprint* WidgetBP = LoadObject<UWidgetBlueprint>(nullptr, *AssetPath);
+	if (!WidgetBP)
+	{
+		// Try loading as regular Blueprint first to give better error
+		UBlueprint* RegularBP = LoadObject<UBlueprint>(nullptr, *AssetPath);
+		if (RegularBP)
+		{
+			UE_LOG(LogSoftUEBridgeEditor, Warning, TEXT("inspect-widget-blueprint: '%s' is not a Widget Blueprint"), *AssetPath);
+			return FBridgeToolResult::Error(FString::Printf(
+				TEXT("Asset '%s' is a Blueprint but not a Widget Blueprint. Use analyze-blueprint instead."),
+				*AssetPath));
+		}
+		UE_LOG(LogSoftUEBridgeEditor, Warning, TEXT("inspect-widget-blueprint: Failed to load '%s'"), *AssetPath);
+		return FBridgeToolResult::Error(FString::Printf(TEXT("Failed to load Widget Blueprint: %s"), *AssetPath));
+	}
+
+	// Build result
+	TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject);
+	Result->SetStringField(TEXT("asset_path"), AssetPath);
+	Result->SetStringField(TEXT("widget_class"), WidgetBP->GeneratedClass ?
+		WidgetBP->GeneratedClass->GetName() : WidgetBP->GetName() + TEXT("_C"));
+
+	// Parent class
+	if (WidgetBP->ParentClass)
+	{
+		Result->SetStringField(TEXT("parent_class"), WidgetBP->ParentClass->GetName());
+		Result->SetStringField(TEXT("parent_class_path"), WidgetBP->ParentClass->GetPathName());
+	}
+
+	// Widget Tree
+	UWidgetTree* WidgetTree = WidgetBP->WidgetTree;
+	if (!WidgetTree)
+	{
+		Result->SetObjectField(TEXT("root_widget"), nullptr);
+		Result->SetArrayField(TEXT("all_widgets"), TArray<TSharedPtr<FJsonValue>>());
+		Result->SetNumberField(TEXT("widget_count"), 0);
+		return FBridgeToolResult::Json(Result);
+	}
+
+	// Root widget
+	UWidget* RootWidget = WidgetTree->RootWidget;
+	if (RootWidget)
+	{
+		int32 MaxDepth = DepthLimit < 0 ? INT32_MAX : DepthLimit;
+		TSharedPtr<FJsonObject> RootNode = BuildWidgetNode(RootWidget, 0, MaxDepth, bIncludeDefaults);
+		Result->SetObjectField(TEXT("root_widget"), RootNode);
+	}
+	else
+	{
+		Result->SetObjectField(TEXT("root_widget"), nullptr);
+	}
+
+	// Flat list of all widget names
+	TArray<FString> AllWidgetNames;
+	if (RootWidget)
+	{
+		CollectWidgetNames(RootWidget, AllWidgetNames);
+	}
+
+	TArray<TSharedPtr<FJsonValue>> NamesArray;
+	for (const FString& Name : AllWidgetNames)
+	{
+		NamesArray.Add(MakeShareable(new FJsonValueString(Name)));
+	}
+	Result->SetArrayField(TEXT("all_widgets"), NamesArray);
+	Result->SetNumberField(TEXT("widget_count"), AllWidgetNames.Num());
+
+	// Named slots (for UserWidgets that define named slots)
+	TArray<TSharedPtr<FJsonValue>> NamedSlotsArray;
+	TArray<UWidget*> AllWidgets;
+	WidgetTree->GetAllWidgets(AllWidgets);
+	for (UWidget* Widget : AllWidgets)
+	{
+		if (UNamedSlot* NamedSlot = Cast<UNamedSlot>(Widget))
+		{
+			TSharedPtr<FJsonObject> SlotObj = MakeShareable(new FJsonObject);
+			SlotObj->SetStringField(TEXT("name"), NamedSlot->GetName());
+			if (NamedSlot->GetContent())
+			{
+				SlotObj->SetStringField(TEXT("content"), NamedSlot->GetContent()->GetName());
+			}
+			NamedSlotsArray.Add(MakeShareable(new FJsonValueObject(SlotObj)));
+		}
+	}
+	if (NamedSlotsArray.Num() > 0)
+	{
+		Result->SetArrayField(TEXT("named_slots"), NamedSlotsArray);
+	}
+
+	// Property bindings
+	if (bIncludeBindings)
+	{
+		TArray<TSharedPtr<FJsonValue>> BindingsArray = ExtractBindings(WidgetBP);
+		if (BindingsArray.Num() > 0)
+		{
+			Result->SetArrayField(TEXT("bindings"), BindingsArray);
+		}
+	}
+
+	// Animations
+	TArray<TSharedPtr<FJsonValue>> AnimationsArray = ExtractAnimations(WidgetBP);
+	if (AnimationsArray.Num() > 0)
+	{
+		Result->SetArrayField(TEXT("animations"), AnimationsArray);
+	}
+
+	// Input assets referenced by the widget blueprint
+	TArray<TSharedPtr<FJsonValue>> InputActionsArray;
+	TArray<TSharedPtr<FJsonValue>> InputContextsArray;
+	ExtractInputReferences(WidgetBP, InputActionsArray, InputContextsArray);
+	if (InputActionsArray.Num() > 0)
+	{
+		Result->SetArrayField(TEXT("input_actions"), InputActionsArray);
+	}
+	if (InputContextsArray.Num() > 0)
+	{
+		Result->SetArrayField(TEXT("input_mapping_contexts"), InputContextsArray);
+	}
+
+	return FBridgeToolResult::Json(Result);
+}
+
+TSharedPtr<FJsonObject> UWidgetBlueprintTool::BuildWidgetNode(
+	UWidget* Widget,
+	int32 CurrentDepth,
+	int32 MaxDepth,
+	bool bIncludeDefaults)
+{
+	if (!Widget)
+	{
+		return nullptr;
+	}
+
+	TSharedPtr<FJsonObject> NodeObj = MakeShareable(new FJsonObject);
+
+	// Basic info
+	NodeObj->SetStringField(TEXT("name"), Widget->GetName());
+	NodeObj->SetStringField(TEXT("class"), Widget->GetClass()->GetName());
+
+	// Visibility
+	NodeObj->SetStringField(TEXT("visibility"), WidgetToolUtils::VisibilityToString(Widget->GetVisibility()));
+
+	// Is variable (exposed to Blueprint)
+	NodeObj->SetBoolField(TEXT("is_variable"), Widget->bIsVariable);
+
+	// Slot information (if widget is in a panel)
+	if (UPanelSlot* Slot = Widget->Slot)
+	{
+		TSharedPtr<FJsonObject> SlotInfo = WidgetToolUtils::ExtractSlotInfo(Slot);
+		if (SlotInfo.IsValid())
+		{
+			NodeObj->SetObjectField(TEXT("slot"), SlotInfo);
+		}
+	}
+
+	// Widget-specific properties
+	if (bIncludeDefaults)
+	{
+		TSharedPtr<FJsonObject> PropsObj = ExtractWidgetProperties(Widget, bIncludeDefaults);
+		if (PropsObj.IsValid() && PropsObj->Values.Num() > 0)
+		{
+			NodeObj->SetObjectField(TEXT("properties"), PropsObj);
+		}
+	}
+
+	// Children (if panel widget and within depth limit)
+	if (CurrentDepth < MaxDepth)
+	{
+		if (UPanelWidget* PanelWidget = Cast<UPanelWidget>(Widget))
+		{
+			TArray<TSharedPtr<FJsonValue>> ChildrenArray;
+			for (int32 i = 0; i < PanelWidget->GetChildrenCount(); i++)
+			{
+				UWidget* Child = PanelWidget->GetChildAt(i);
+				if (Child)
+				{
+					TSharedPtr<FJsonObject> ChildNode = BuildWidgetNode(
+						Child, CurrentDepth + 1, MaxDepth, bIncludeDefaults);
+					if (ChildNode.IsValid())
+					{
+						ChildrenArray.Add(MakeShareable(new FJsonValueObject(ChildNode)));
+					}
+				}
+			}
+			if (ChildrenArray.Num() > 0)
+			{
+				NodeObj->SetArrayField(TEXT("children"), ChildrenArray);
+			}
+		}
+	}
+
+	return NodeObj;
+}
+
+TSharedPtr<FJsonObject> UWidgetBlueprintTool::ExtractWidgetProperties(UWidget* Widget, bool bIncludeDefaults)
+{
+	TSharedPtr<FJsonObject> PropsObj = MakeShareable(new FJsonObject);
+
+	// Render transform
+	FWidgetTransform RenderTransform = Widget->GetRenderTransform();
+	if (bIncludeDefaults || !RenderTransform.IsIdentity())
+	{
+		TSharedPtr<FJsonObject> TransformObj = MakeShareable(new FJsonObject);
+		TransformObj->SetArrayField(TEXT("translation"), WidgetToolUtils::Vector2dToJsonArray(RenderTransform.Translation));
+		TransformObj->SetNumberField(TEXT("angle"), RenderTransform.Angle);
+		TransformObj->SetArrayField(TEXT("scale"), WidgetToolUtils::Vector2dToJsonArray(RenderTransform.Scale));
+		TransformObj->SetArrayField(TEXT("shear"), WidgetToolUtils::Vector2dToJsonArray(RenderTransform.Shear));
+		PropsObj->SetObjectField(TEXT("render_transform"), TransformObj);
+	}
+
+	// Render opacity
+	float RenderOpacity = Widget->GetRenderOpacity();
+	if (bIncludeDefaults || RenderOpacity != 1.0f)
+	{
+		PropsObj->SetNumberField(TEXT("render_opacity"), RenderOpacity);
+	}
+
+	// Tool tip text
+	FText ToolTipText = Widget->GetToolTipText();
+	if (!ToolTipText.IsEmpty())
+	{
+		PropsObj->SetStringField(TEXT("tool_tip"), ToolTipText.ToString());
+	}
+
+	// Is enabled
+	bool bIsEnabled = Widget->GetIsEnabled();
+	if (bIncludeDefaults || !bIsEnabled)
+	{
+		PropsObj->SetBoolField(TEXT("is_enabled"), bIsEnabled);
+	}
+
+	return PropsObj;
+}
+
+TArray<TSharedPtr<FJsonValue>> UWidgetBlueprintTool::ExtractBindings(UWidgetBlueprint* WidgetBP)
+{
+	TArray<TSharedPtr<FJsonValue>> BindingsArray;
+
+	if (!WidgetBP)
+	{
+		return BindingsArray;
+	}
+
+	UWidgetBlueprintGeneratedClass* GeneratedClass = Cast<UWidgetBlueprintGeneratedClass>(WidgetBP->GeneratedClass);
+	if (!GeneratedClass)
+	{
+		return BindingsArray;
+	}
+
+	for (const FDelegateRuntimeBinding& Binding : GeneratedClass->Bindings)
+	{
+		TSharedPtr<FJsonObject> BindingObj = MakeShareable(new FJsonObject);
+		BindingObj->SetStringField(TEXT("widget"), Binding.ObjectName);
+		BindingObj->SetStringField(TEXT("property"), Binding.PropertyName.ToString());
+
+		// Determine binding type
+		if (Binding.FunctionName != NAME_None)
+		{
+			BindingObj->SetStringField(TEXT("binding_type"), TEXT("Function"));
+			BindingObj->SetStringField(TEXT("function_name"), Binding.FunctionName.ToString());
+		}
+		else if (Binding.SourcePath.IsValid())
+		{
+			BindingObj->SetStringField(TEXT("binding_type"), TEXT("Property"));
+			BindingObj->SetStringField(TEXT("source_path"), Binding.SourcePath.ToString());
+		}
+		else
+		{
+			BindingObj->SetStringField(TEXT("binding_type"), TEXT("Unknown"));
+		}
+
+		// Binding kind
+		switch (Binding.Kind)
+		{
+		case EBindingKind::Function:
+			BindingObj->SetStringField(TEXT("kind"), TEXT("Function"));
+			break;
+		case EBindingKind::Property:
+			BindingObj->SetStringField(TEXT("kind"), TEXT("Property"));
+			break;
+		default:
+			BindingObj->SetStringField(TEXT("kind"), TEXT("Unknown"));
+			break;
+		}
+
+		BindingsArray.Add(MakeShareable(new FJsonValueObject(BindingObj)));
+	}
+
+	return BindingsArray;
+}
+
+TArray<TSharedPtr<FJsonValue>> UWidgetBlueprintTool::ExtractAnimations(UWidgetBlueprint* WidgetBP)
+{
+	TArray<TSharedPtr<FJsonValue>> AnimationsArray;
+
+	if (!WidgetBP)
+	{
+		return AnimationsArray;
+	}
+
+	for (UWidgetAnimation* Animation : WidgetBP->Animations)
+	{
+		if (!Animation)
+		{
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> AnimObj = MakeShareable(new FJsonObject);
+		AnimObj->SetStringField(TEXT("name"), Animation->GetName());
+		AnimObj->SetStringField(TEXT("display_name"), Animation->GetDisplayName().ToString());
+
+		// Get movie scene for duration info
+		const UMovieScene* MovieScene = Animation->GetMovieScene();
+		if (MovieScene)
+		{
+			// Duration in frames and seconds
+			FFrameRate TickResolution = MovieScene->GetTickResolution();
+			FFrameRate DisplayRate = MovieScene->GetDisplayRate();
+
+			TRange<FFrameNumber> PlaybackRange = MovieScene->GetPlaybackRange();
+			FFrameNumber StartFrame = PlaybackRange.GetLowerBoundValue();
+			FFrameNumber EndFrame = PlaybackRange.GetUpperBoundValue();
+
+			double StartSeconds = TickResolution.AsSeconds(StartFrame);
+			double EndSeconds = TickResolution.AsSeconds(EndFrame);
+			double Duration = EndSeconds - StartSeconds;
+
+			AnimObj->SetNumberField(TEXT("start_time"), StartSeconds);
+			AnimObj->SetNumberField(TEXT("end_time"), EndSeconds);
+			AnimObj->SetNumberField(TEXT("duration"), Duration);
+			AnimObj->SetNumberField(TEXT("display_rate_fps"), DisplayRate.AsDecimal());
+
+			// Track count - count bindings' tracks
+			int32 TotalTracks = 0;
+			for (const FMovieSceneBinding& Binding : MovieScene->GetBindings())
+			{
+				TotalTracks += Binding.GetTracks().Num();
+			}
+			AnimObj->SetNumberField(TEXT("track_count"), TotalTracks);
+
+			// Get bound object names (which widgets are animated)
+			TArray<TSharedPtr<FJsonValue>> BoundObjectsArray;
+			for (const FMovieSceneBinding& Binding : MovieScene->GetBindings())
+			{
+				TSharedPtr<FJsonObject> BindingObj = MakeShareable(new FJsonObject);
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 7
+				// GetName() deprecated in 5.7, use GUID as identifier
+				BindingObj->SetStringField(TEXT("guid"), Binding.GetObjectGuid().ToString());
+#else
+				BindingObj->SetStringField(TEXT("name"), Binding.GetName());
+#endif
+				BindingObj->SetNumberField(TEXT("track_count"), Binding.GetTracks().Num());
+
+				// Get track types for this binding
+				TArray<TSharedPtr<FJsonValue>> TracksArray;
+				for (UMovieSceneTrack* Track : Binding.GetTracks())
+				{
+					if (Track)
+					{
+						TSharedPtr<FJsonObject> TrackObj = MakeShareable(new FJsonObject);
+						TrackObj->SetStringField(TEXT("type"), Track->GetClass()->GetName());
+						TrackObj->SetStringField(TEXT("display_name"), Track->GetDisplayName().ToString());
+						TracksArray.Add(MakeShareable(new FJsonValueObject(TrackObj)));
+					}
+				}
+				if (TracksArray.Num() > 0)
+				{
+					BindingObj->SetArrayField(TEXT("tracks"), TracksArray);
+				}
+
+				BoundObjectsArray.Add(MakeShareable(new FJsonValueObject(BindingObj)));
+			}
+			if (BoundObjectsArray.Num() > 0)
+			{
+				AnimObj->SetArrayField(TEXT("bound_objects"), BoundObjectsArray);
+			}
+		}
+
+		AnimationsArray.Add(MakeShareable(new FJsonValueObject(AnimObj)));
+	}
+
+	return AnimationsArray;
+}
+
+void UWidgetBlueprintTool::ExtractInputReferences(
+	UWidgetBlueprint* WidgetBP,
+	TArray<TSharedPtr<FJsonValue>>& OutActions,
+	TArray<TSharedPtr<FJsonValue>>& OutContexts)
+{
+	if (!WidgetBP)
+	{
+		return;
+	}
+
+	TMap<FString, UInputAction*> InputActions;
+	TMap<FString, UInputMappingContext*> InputContexts;
+	TSet<FSoftObjectPath> SeenObjects;
+
+	CollectInputAssetsRecursive(WidgetBP, SeenObjects, InputActions, InputContexts);
+
+	if (WidgetBP->GeneratedClass)
+	{
+		if (UObject* CDO = WidgetBP->GeneratedClass->GetDefaultObject())
+		{
+			CollectInputAssetsRecursive(CDO, SeenObjects, InputActions, InputContexts);
+		}
+	}
+
+	if (WidgetBP->WidgetTree)
+	{
+		TArray<UWidget*> AllWidgets;
+		WidgetBP->WidgetTree->GetAllWidgets(AllWidgets);
+		for (UWidget* Widget : AllWidgets)
+		{
+			CollectInputAssetsRecursive(Widget, SeenObjects, InputActions, InputContexts);
+		}
+	}
+
+	for (const TPair<FString, UInputAction*>& Pair : InputActions)
+	{
+		if (!Pair.Value)
+		{
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> ActionObj = MakeShareable(new FJsonObject);
+		ActionObj->SetStringField(TEXT("name"), Pair.Value->GetName());
+		ActionObj->SetStringField(TEXT("path"), Pair.Key);
+		OutActions.Add(MakeShareable(new FJsonValueObject(ActionObj)));
+	}
+
+	for (const TPair<FString, UInputMappingContext*>& Pair : InputContexts)
+	{
+		if (!Pair.Value)
+		{
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> ContextObj = MakeShareable(new FJsonObject);
+		ContextObj->SetStringField(TEXT("name"), Pair.Value->GetName());
+		ContextObj->SetStringField(TEXT("path"), Pair.Key);
+
+		TArray<TSharedPtr<FJsonValue>> MappingsArray;
+		for (const FEnhancedActionKeyMapping& Mapping : Pair.Value->GetMappings())
+		{
+			TSharedPtr<FJsonObject> MappingObj = MakeShareable(new FJsonObject);
+			if (Mapping.Action)
+			{
+				MappingObj->SetStringField(TEXT("action_name"), Mapping.Action->GetName());
+				MappingObj->SetStringField(TEXT("action_path"), Mapping.Action->GetPathName());
+			}
+
+			MappingObj->SetStringField(TEXT("key"), Mapping.Key.GetFName().ToString());
+			MappingObj->SetStringField(TEXT("key_display_name"), Mapping.Key.GetDisplayName().ToString());
+
+			TArray<TSharedPtr<FJsonValue>> ModifiersArray;
+			for (const TObjectPtr<UInputModifier>& Modifier : Mapping.Modifiers)
+			{
+				if (Modifier)
+				{
+					ModifiersArray.Add(MakeShareable(new FJsonValueString(Modifier->GetClass()->GetName())));
+				}
+			}
+			if (ModifiersArray.Num() > 0)
+			{
+				MappingObj->SetArrayField(TEXT("modifiers"), ModifiersArray);
+			}
+
+			TArray<TSharedPtr<FJsonValue>> TriggersArray;
+			for (const TObjectPtr<UInputTrigger>& Trigger : Mapping.Triggers)
+			{
+				if (Trigger)
+				{
+					TriggersArray.Add(MakeShareable(new FJsonValueString(Trigger->GetClass()->GetName())));
+				}
+			}
+			if (TriggersArray.Num() > 0)
+			{
+				MappingObj->SetArrayField(TEXT("triggers"), TriggersArray);
+			}
+
+			MappingsArray.Add(MakeShareable(new FJsonValueObject(MappingObj)));
+		}
+
+		if (MappingsArray.Num() > 0)
+		{
+			ContextObj->SetArrayField(TEXT("mappings"), MappingsArray);
+		}
+
+		OutContexts.Add(MakeShareable(new FJsonValueObject(ContextObj)));
+	}
+}
+
+void UWidgetBlueprintTool::CollectInputAssetsRecursive(
+	UObject* SourceObject,
+	TSet<FSoftObjectPath>& SeenObjects,
+	TMap<FString, UInputAction*>& OutActions,
+	TMap<FString, UInputMappingContext*>& OutContexts)
+{
+	if (!SourceObject)
+	{
+		return;
+	}
+
+	const FSoftObjectPath ObjectPath(SourceObject);
+	if (ObjectPath.IsValid())
+	{
+		if (SeenObjects.Contains(ObjectPath))
+		{
+			return;
+		}
+		SeenObjects.Add(ObjectPath);
+	}
+
+	TFunction<void(UObject*)> RegisterObject = [&](UObject* Candidate)
+	{
+		if (!Candidate)
+		{
+			return;
+		}
+
+		if (UInputAction* InputAction = Cast<UInputAction>(Candidate))
+		{
+			OutActions.FindOrAdd(InputAction->GetPathName()) = InputAction;
+			return;
+		}
+
+		if (UInputMappingContext* InputContext = Cast<UInputMappingContext>(Candidate))
+		{
+			OutContexts.FindOrAdd(InputContext->GetPathName()) = InputContext;
+			return;
+		}
+
+		if (Candidate != SourceObject)
+		{
+			CollectInputAssetsRecursive(Candidate, SeenObjects, OutActions, OutContexts);
+		}
+	};
+
+	TFunction<void(const FProperty*, const void*)> ScanValue;
+	ScanValue = [&](const FProperty* Property, const void* ValuePtr)
+	{
+		if (!Property || !ValuePtr)
+		{
+			return;
+		}
+
+		if (const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property))
+		{
+			RegisterObject(ObjectProperty->GetObjectPropertyValue(ValuePtr));
+			return;
+		}
+
+		if (const FSoftObjectProperty* SoftObjectProperty = CastField<FSoftObjectProperty>(Property))
+		{
+			const FSoftObjectPtr SoftObject = SoftObjectProperty->GetPropertyValue(ValuePtr);
+			RegisterObject(Cast<UObject>(SoftObject.Get()));
+			if (!SoftObject.IsNull())
+			{
+				RegisterObject(Cast<UObject>(SoftObject.ToSoftObjectPath().TryLoad()));
+			}
+			return;
+		}
+
+		if (const FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+		{
+			for (TFieldIterator<FProperty> It(StructProperty->Struct, EFieldIterationFlags::IncludeSuper); It; ++It)
+			{
+				const FProperty* InnerProperty = *It;
+				ScanValue(InnerProperty, InnerProperty->ContainerPtrToValuePtr<void>(ValuePtr));
+			}
+			return;
+		}
+
+		if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+		{
+			FScriptArrayHelper Helper(ArrayProperty, ValuePtr);
+			for (int32 Index = 0; Index < Helper.Num(); ++Index)
+			{
+				ScanValue(ArrayProperty->Inner, Helper.GetRawPtr(Index));
+			}
+		}
+	};
+
+	for (TFieldIterator<FProperty> It(SourceObject->GetClass(), EFieldIterationFlags::IncludeSuper); It; ++It)
+	{
+		const FProperty* Property = *It;
+		ScanValue(Property, Property->ContainerPtrToValuePtr<void>(SourceObject));
+	}
+}
+
+void UWidgetBlueprintTool::CollectWidgetNames(UWidget* Widget, TArray<FString>& OutNames)
+{
+	if (!Widget)
+	{
+		return;
+	}
+
+	OutNames.Add(Widget->GetName());
+
+	if (UPanelWidget* PanelWidget = Cast<UPanelWidget>(Widget))
+	{
+		for (int32 i = 0; i < PanelWidget->GetChildrenCount(); i++)
+		{
+			CollectWidgetNames(PanelWidget->GetChildAt(i), OutNames);
+		}
+	}
+}

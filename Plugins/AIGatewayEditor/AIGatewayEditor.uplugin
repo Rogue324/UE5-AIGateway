@@ -10,9 +10,37 @@
   "IsBetaVersion": true,
   "Modules": [
     {
+      "Name": "SoftUEBridge",
+      "Type": "Editor",
+      "LoadingPhase": "Default"
+    },
+    {
+      "Name": "SoftUEBridgeEditor",
+      "Type": "Editor",
+      "LoadingPhase": "Default"
+    },
+    {
       "Name": "AIGatewayEditor",
       "Type": "Editor",
       "LoadingPhase": "Default"
+    }
+  ],
+  "Plugins": [
+    {
+      "Name": "EditorScriptingUtilities",
+      "Enabled": true
+    },
+    {
+      "Name": "EnhancedInput",
+      "Enabled": true
+    },
+    {
+      "Name": "PythonScriptPlugin",
+      "Enabled": true
+    },
+    {
+      "Name": "StateTree",
+      "Enabled": true
     }
   ]
 }

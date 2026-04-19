@@ -12,6 +12,7 @@ class UAIGatewayEditorSettings : public UDeveloperSettings
 public:
     UAIGatewayEditorSettings();
 
+    virtual FName GetContainerName() const override;
     virtual FName GetCategoryName() const override;
 
     UPROPERTY(Config, EditAnywhere, Category = "Connection", meta = (DisplayName = "Base URL"))
@@ -19,9 +20,6 @@ public:
 
     UPROPERTY(Config, EditAnywhere, Category = "Connection", meta = (DisplayName = "API Key"))
     FString ApiKey;
-
-    UPROPERTY(Config, EditAnywhere, Category = "Request", meta = (DisplayName = "Chat Endpoint", ToolTip = "Appended to Base URL, for example /chat/completions"))
-    FString ChatEndpoint;
 
     UPROPERTY(Config, EditAnywhere, Category = "Request", meta = (DisplayName = "Model"))
     FString Model;

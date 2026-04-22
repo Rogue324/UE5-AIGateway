@@ -79,6 +79,62 @@ namespace
 
         return FString();
     }
+
+    FString ExtractTextFromContentParts(const TArray<TSharedPtr<FJsonValue>>& ContentParts)
+    {
+        FString CombinedText;
+        for (const TSharedPtr<FJsonValue>& PartValue : ContentParts)
+        {
+            const TSharedPtr<FJsonObject>* PartObject = nullptr;
+            if (!PartValue.IsValid() || !PartValue->TryGetObject(PartObject) || PartObject == nullptr || !(*PartObject).IsValid())
+            {
+                continue;
+            }
+
+            FString PartType;
+            (*PartObject)->TryGetStringField(TEXT("type"), PartType);
+
+            FString PartText;
+            if ((*PartObject)->TryGetStringField(TEXT("text"), PartText) && !PartText.IsEmpty())
+            {
+                CombinedText.Append(PartText);
+                continue;
+            }
+
+            if (PartType.Equals(TEXT("output_text"), ESearchCase::IgnoreCase))
+            {
+                const TArray<TSharedPtr<FJsonValue>>* Annotations = nullptr;
+                if ((*PartObject)->TryGetArrayField(TEXT("annotations"), Annotations))
+                {
+                    // Intentionally ignored for now; text already captured above when present.
+                }
+            }
+        }
+
+        return CombinedText;
+    }
+
+    FString ExtractAssistantContentFromMessage(const TSharedPtr<FJsonObject>& MessageObject)
+    {
+        if (!MessageObject.IsValid())
+        {
+            return FString();
+        }
+
+        FString ContentText;
+        if (MessageObject->TryGetStringField(TEXT("content"), ContentText) && !ContentText.IsEmpty())
+        {
+            return ContentText;
+        }
+
+        const TArray<TSharedPtr<FJsonValue>>* ContentArray = nullptr;
+        if (MessageObject->TryGetArrayField(TEXT("content"), ContentArray) && ContentArray != nullptr && ContentArray->Num() > 0)
+        {
+            return ExtractTextFromContentParts(*ContentArray);
+        }
+
+        return FString();
+    }
 }
 
 FAIGatewayChatController::FAIGatewayChatController(
@@ -1125,7 +1181,14 @@ bool FAIGatewayChatController::ParseChatCompletionPayload(
         return false;
     }
 
-    (*MessageObject)->TryGetStringField(TEXT("content"), OutAssistantContent);
+    OutAssistantContent = ExtractAssistantContentFromMessage(*MessageObject);
+    if (OutAssistantContent.IsEmpty())
+    {
+        // Compatibility fallback for some OpenAI-like gateways that still return
+        // text on the top-level choice object instead of message.content.
+        (*FirstChoiceObject)->TryGetStringField(TEXT("text"), OutAssistantContent);
+    }
+
     TryParseToolCallsFromMessage(*MessageObject, OutToolCalls);
     return true;
 }

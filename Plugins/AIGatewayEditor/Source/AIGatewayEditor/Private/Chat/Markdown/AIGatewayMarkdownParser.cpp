@@ -2,11 +2,25 @@
 
 namespace
 {
+    int32 GetMarkdownHeadingLevel(const FString& TrimmedLine)
+    {
+        int32 HashCount = 0;
+        while (HashCount < TrimmedLine.Len() && TrimmedLine[HashCount] == TEXT('#') && HashCount < 6)
+        {
+            ++HashCount;
+        }
+
+        if (HashCount == 0 || HashCount >= TrimmedLine.Len())
+        {
+            return 0;
+        }
+
+        return TrimmedLine[HashCount] == TEXT('#') ? 0 : HashCount;
+    }
+
     bool IsMarkdownHeadingLine(const FString& TrimmedLine)
     {
-        return TrimmedLine.StartsWith(TEXT("# ")) ||
-            TrimmedLine.StartsWith(TEXT("## ")) ||
-            TrimmedLine.StartsWith(TEXT("### "));
+        return GetMarkdownHeadingLevel(TrimmedLine) > 0;
     }
 
     bool IsMarkdownTableLine(const FString& TrimmedLine)
@@ -162,7 +176,7 @@ TArray<FAIGatewayMarkdownBlock> FAIGatewayMarkdownParser::ParseBlocks(const FStr
         ParagraphBuffer.Append(Line);
     }
 
-    if (bInCodeBlock)
+    if (bInCodeBlock && !CodeBlockBuffer.IsEmpty())
     {
         FlushCodeBlock();
     }

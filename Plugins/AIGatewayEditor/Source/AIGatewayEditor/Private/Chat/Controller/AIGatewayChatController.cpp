@@ -734,7 +734,7 @@ bool FAIGatewayChatController::IsGeneratingTitle() const
 
 int32 FAIGatewayChatController::GetConfiguredMaxToolRounds() const
 {
-    return FMath::Clamp(GetDefault<UAIGatewayEditorSettings>()->MaxToolRounds, 1, 64);
+    return FMath::Max(GetDefault<UAIGatewayEditorSettings>()->MaxToolRounds, 1);
 }
 
 bool FAIGatewayChatController::ShouldShowToolActivityInChat() const

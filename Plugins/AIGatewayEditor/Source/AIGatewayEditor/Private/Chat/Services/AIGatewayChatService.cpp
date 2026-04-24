@@ -19,7 +19,7 @@ namespace
 {
     constexpr int32 MaxLoggedResponseBodyChars = 2048;
 
-    FString SerializeJsonObject(const TSharedPtr<FJsonObject>& Object)
+    FString SerializeServiceJsonObject(const TSharedPtr<FJsonObject>& Object)
     {
         if (!Object.IsValid())
         {
@@ -104,7 +104,7 @@ namespace
             SanitizedObject->SetField(Pair.Key, CloneJsonValueSanitized(Pair.Value));
         }
 
-        return SerializeJsonObject(SanitizedObject);
+        return SerializeServiceJsonObject(SanitizedObject);
     }
 
     void LogRequestDebugSummary(const TSharedPtr<FJsonObject>& RequestBodyObject)

@@ -7,6 +7,7 @@ class FAIGatewayMarkdownRichTextRenderer
 {
 public:
     static const ISlateStyle& GetStyle();
+    static FString NormalizeForDisplay(const FString& Text);
     static FString RenderMarkdownToRichText(const FString& MarkdownText, bool bTreatAsParagraph = false);
     static FString RenderInlineMarkdown(const FString& Text, bool bEnableStyleTags = true);
     static FString EscapeRichText(const FString& Text);

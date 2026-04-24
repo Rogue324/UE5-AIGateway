@@ -11,11 +11,4 @@ public:
     SLATE_END_ARGS()
 
     void Construct(const FArguments& InArgs);
-    void UpdateMessage(const FAIGatewayChatMessage& InMessage);
-
-    const FAIGatewayChatMessage& GetMessage() const { return Message; }
-
-private:
-    FAIGatewayChatMessage Message;
-    TSharedPtr<class SAIGatewayMarkdownMessageBody> MessageBody;
 };

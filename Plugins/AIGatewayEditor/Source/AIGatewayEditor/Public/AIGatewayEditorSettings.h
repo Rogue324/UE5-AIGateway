@@ -24,7 +24,7 @@ public:
     UPROPERTY(Config, EditAnywhere, Category = "Request", meta = (DisplayName = "Model"))
     FString Model;
 
-    UPROPERTY(Config, EditAnywhere, Category = "Chat", meta = (DisplayName = "Max Tool Rounds", ClampMin = "1", UIMin = "1"))
+    UPROPERTY(Config, EditAnywhere, Category = "Chat", meta = (DisplayName = "Max Tool Rounds", ClampMin = "1", ClampMax = "64", UIMin = "1", UIMax = "64"))
     int32 MaxToolRounds;
 
     UPROPERTY(Config, EditAnywhere, Category = "Chat", meta = (DisplayName = "Show Tool Activity In Chat"))

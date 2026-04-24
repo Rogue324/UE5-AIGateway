@@ -15,7 +15,6 @@ struct FAIGatewayChatCompletionRequest
 {
     TArray<TSharedPtr<FJsonValue>> Messages;
     TArray<TSharedPtr<FJsonValue>> Tools;
-    FString ToolChoice;
     bool bStream = true;
     int32 MaxTokens = 0;
 };

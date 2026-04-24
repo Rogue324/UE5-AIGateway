@@ -13,11 +13,5 @@ public:
     void Refresh(const FAIGatewayChatPanelViewState& ViewState);
 
 private:
-    bool CanUpdateExistingCards(const TArray<FAIGatewayChatMessage>& VisibleMessages) const;
-    void RebuildMessages(const TArray<FAIGatewayChatMessage>& VisibleMessages);
-
     TSharedPtr<class SScrollBox> ChatHistoryScrollBox;
-    TArray<TSharedPtr<class SAIGatewayChatMessageCard>> MessageCards;
-    TArray<FAIGatewayChatMessage> CachedVisibleMessages;
-    bool bShowingEmptyPlaceholder = false;
 };

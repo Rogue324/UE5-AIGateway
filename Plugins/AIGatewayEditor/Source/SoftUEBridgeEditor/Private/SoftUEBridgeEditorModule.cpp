@@ -73,8 +73,6 @@
 #include "Tools/Write/EditorSpawnActorTool.h"
 #include "Tools/Write/EditorSetPropertyTool.h"
 #include "Tools/Write/AddComponentTool.h"
-#include "Tools/Write/AddBlueprintVariableTool.h"
-#include "Tools/Write/AddBlueprintK2NodeTool.h"
 #include "Tools/Write/AddWidgetTool.h"
 #include "Tools/Write/AddDataTableRowTool.h"
 #include "Tools/Write/AddGraphNodeTool.h"
@@ -171,8 +169,6 @@ void FSoftUEBridgeEditorModule::StartupModule()
 	Registry.RegisterToolClass<UEditorSpawnActorTool>();
 	Registry.RegisterToolClass<UEditorSetPropertyTool>();
 	Registry.RegisterToolClass<UAddComponentTool>();
-	Registry.RegisterToolClass<UAddBlueprintVariableTool>();
-	Registry.RegisterToolClass<UAddBlueprintK2NodeTool>();
 	Registry.RegisterToolClass<UAddWidgetTool>();
 	Registry.RegisterToolClass<UAddDataTableRowTool>();
 	Registry.RegisterToolClass<UAddGraphNodeTool>();

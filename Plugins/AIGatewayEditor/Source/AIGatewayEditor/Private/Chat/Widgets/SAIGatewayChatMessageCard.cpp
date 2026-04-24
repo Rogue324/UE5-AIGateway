@@ -12,7 +12,7 @@
 
 void SAIGatewayChatMessageCard::Construct(const FArguments& InArgs)
 {
-    Message = InArgs._Message;
+    const FAIGatewayChatMessage Message = InArgs._Message;
 
     FString RoleStyle = TEXT("RoleSystem");
     const FSlateBrush* BubbleBrush = FAIGatewayMarkdownRichTextRenderer::GetStyle().GetBrush("BubbleSystem");
@@ -79,30 +79,11 @@ void SAIGatewayChatMessageCard::Construct(const FArguments& InArgs)
                     + SVerticalBox::Slot()
                     .AutoHeight()
                     [
-                        SAssignNew(MessageBody, SAIGatewayMarkdownMessageBody)
+                        SNew(SAIGatewayMarkdownMessageBody)
                         .MarkdownText(Message.Content)
                     ]
                 ]
             ]
         ]
     ];
-}
-
-void SAIGatewayChatMessageCard::UpdateMessage(const FAIGatewayChatMessage& InMessage)
-{
-    if (Message.Role != InMessage.Role)
-    {
-        return;
-    }
-
-    if (Message.Content == InMessage.Content)
-    {
-        return;
-    }
-
-    Message = InMessage;
-    if (MessageBody.IsValid())
-    {
-        MessageBody->SetMarkdownText(Message.Content);
-    }
 }

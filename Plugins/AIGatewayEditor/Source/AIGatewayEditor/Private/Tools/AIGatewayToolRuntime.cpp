@@ -113,14 +113,6 @@ namespace
             : EAIGatewayToolConfirmationPolicy::None;
     }
 
-    bool ShouldExposeBridgeToolToChat(const FString& ToolName)
-    {
-        // Keep scripting available in SoftUEBridge, but do not offer it to the chat model by default.
-        // The model should prefer deterministic native tools such as add-component, set-asset-property,
-        // graph tools, and query tools instead of generating fragile UE Python snippets.
-        return ToolName != TEXT("run-python-script");
-    }
-
     TSharedPtr<FJsonObject> ActorToJson(const AActor* Actor)
     {
         TSharedPtr<FJsonObject> Object = MakeShared<FJsonObject>();
@@ -398,11 +390,6 @@ void FAIGatewayToolRuntime::BuildDefinitions()
 
     for (const FBridgeToolDefinition& BridgeDefinition : FBridgeToolRegistry::Get().GetAllToolDefinitions())
     {
-        if (!ShouldExposeBridgeToolToChat(BridgeDefinition.Name))
-        {
-            continue;
-        }
-
         TSharedPtr<FJsonObject> PropertiesObject = MakeShared<FJsonObject>();
         for (const TPair<FString, FBridgeSchemaProperty>& Pair : BridgeDefinition.InputSchema)
         {
@@ -424,13 +411,7 @@ void FAIGatewayToolRuntime::BuildDefinitions()
             SchemaObject->SetArrayField(TEXT("required"), RequiredArray);
         }
 
-        FString Description = BridgeDefinition.Description;
-        if (BridgeDefinition.Name == TEXT("add-graph-node"))
-        {
-            Description += TEXT(" Low-level fallback for advanced graph nodes. For common Blueprint function calls and variable get/set nodes, prefer add-blueprint-k2-node because it binds functions and variables correctly.");
-        }
-
-        AddDefinition(BridgeDefinition.Name, Description, SchemaObject, GetConfirmationPolicy(BridgeDefinition.Name));
+        AddDefinition(BridgeDefinition.Name, BridgeDefinition.Description, SchemaObject, GetConfirmationPolicy(BridgeDefinition.Name));
     }
 
     AddDefinition(

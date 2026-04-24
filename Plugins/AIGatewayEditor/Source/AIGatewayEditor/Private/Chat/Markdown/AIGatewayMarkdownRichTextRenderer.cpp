@@ -26,66 +26,6 @@ namespace
         Style.UnderlineStyle.SetPressed(FSlateNoResource());
         return Style;
     }
-
-    bool TryParseAtxHeadingRichText(const FString& TrimmedLine, int32& OutLevel, FString& OutContent)
-    {
-        OutLevel = 0;
-        OutContent.Empty();
-
-        int32 HashCount = 0;
-        while (HashCount < TrimmedLine.Len() && TrimmedLine[HashCount] == TEXT('#') && HashCount < 6)
-        {
-            ++HashCount;
-        }
-
-        if (HashCount == 0)
-        {
-            return false;
-        }
-
-        int32 ContentStart = HashCount;
-        if (ContentStart < TrimmedLine.Len() && TrimmedLine[ContentStart] == TEXT(' '))
-        {
-            ++ContentStart;
-        }
-
-        if (ContentStart >= TrimmedLine.Len())
-        {
-            return false;
-        }
-
-        OutLevel = HashCount;
-        OutContent = TrimmedLine.Mid(ContentStart).TrimStartAndEnd();
-        return !OutContent.IsEmpty();
-    }
-
-    TCHAR NormalizeGlyph(TCHAR InChar)
-    {
-        if (InChar >= 0x2080 && InChar <= 0x2089)
-        {
-            return static_cast<TCHAR>(TEXT('0') + (InChar - 0x2080));
-        }
-
-        switch (InChar)
-        {
-        case 0x2093: return TEXT('x'); // subscript x
-        case 0x2212: return TEXT('-'); // unicode minus
-        case 0x00A0: return TEXT(' '); // nbsp
-        case 0x200B: return TEXT(' '); // zero-width space fallback
-        default: return InChar;
-        }
-    }
-
-    FString NormalizeMarkdownGlyphs(const FString& InText)
-    {
-        FString Out;
-        Out.Reserve(InText.Len());
-        for (int32 Index = 0; Index < InText.Len(); ++Index)
-        {
-            Out.AppendChar(NormalizeGlyph(InText[Index]));
-        }
-        return Out;
-    }
 }
 
 const ISlateStyle& FAIGatewayMarkdownRichTextRenderer::GetStyle()
@@ -133,22 +73,29 @@ FString FAIGatewayMarkdownRichTextRenderer::RenderMarkdownToRichText(const FStri
 {
     (void)bTreatAsParagraph;
 
-    const FString NormalizedInput = NormalizeMarkdownGlyphs(MarkdownText);
-    FString Trimmed = NormalizedInput.TrimStartAndEnd();
+    FString Trimmed = MarkdownText.TrimStartAndEnd();
     if (Trimmed.IsEmpty())
     {
         return TEXT(" ");
     }
 
-    int32 HeadingLevel = 0;
-    FString HeadingContent;
-    if (TryParseAtxHeadingRichText(Trimmed, HeadingLevel, HeadingContent))
+    if (Trimmed.StartsWith(TEXT("### ")))
     {
-        return FString::Printf(TEXT("<MarkdownHeading>%s</>"), *RenderInlineMarkdown(HeadingContent));
+        return FString::Printf(TEXT("<MarkdownHeading>%s</>"), *RenderInlineMarkdown(Trimmed.RightChop(4)));
+    }
+
+    if (Trimmed.StartsWith(TEXT("## ")))
+    {
+        return FString::Printf(TEXT("<MarkdownHeading>%s</>"), *RenderInlineMarkdown(Trimmed.RightChop(3)));
+    }
+
+    if (Trimmed.StartsWith(TEXT("# ")))
+    {
+        return FString::Printf(TEXT("<MarkdownHeading>%s</>"), *RenderInlineMarkdown(Trimmed.RightChop(2)));
     }
 
     TArray<FString> Lines;
-    FAIGatewayMarkdownParser::NormalizeLineEndings(NormalizedInput).ParseIntoArray(Lines, TEXT("\n"), false);
+    FAIGatewayMarkdownParser::NormalizeLineEndings(MarkdownText).ParseIntoArray(Lines, TEXT("\n"), false);
 
     FString Output;
     for (int32 Index = 0; Index < Lines.Num(); ++Index)
@@ -180,17 +127,16 @@ FString FAIGatewayMarkdownRichTextRenderer::RenderMarkdownToRichText(const FStri
 
 FString FAIGatewayMarkdownRichTextRenderer::RenderInlineMarkdown(const FString& Text, bool bEnableStyleTags)
 {
-    const FString NormalizedText = NormalizeMarkdownGlyphs(Text);
     FString Output;
     bool bInBold = false;
     bool bInItalic = false;
     bool bInInlineCode = false;
 
-    for (int32 Index = 0; Index < NormalizedText.Len();)
+    for (int32 Index = 0; Index < Text.Len();)
     {
-        const TCHAR CurrentChar = NormalizedText[Index];
+        const TCHAR CurrentChar = Text[Index];
 
-        if (!bInInlineCode && Index + 1 < NormalizedText.Len() && NormalizedText[Index] == TEXT('*') && NormalizedText[Index + 1] == TEXT('*'))
+        if (!bInInlineCode && Index + 1 < Text.Len() && Text[Index] == TEXT('*') && Text[Index + 1] == TEXT('*'))
         {
             if (bEnableStyleTags)
             {
@@ -223,15 +169,15 @@ FString FAIGatewayMarkdownRichTextRenderer::RenderInlineMarkdown(const FString& 
             continue;
         }
 
-        if (!bInInlineCode && (NormalizedText.Mid(Index).StartsWith(TEXT("http://")) || NormalizedText.Mid(Index).StartsWith(TEXT("https://"))))
+        if (!bInInlineCode && (Text.Mid(Index).StartsWith(TEXT("http://")) || Text.Mid(Index).StartsWith(TEXT("https://"))))
         {
             int32 EndIndex = Index;
-            while (EndIndex < NormalizedText.Len() && !FChar::IsWhitespace(NormalizedText[EndIndex]) && NormalizedText[EndIndex] != TEXT(')'))
+            while (EndIndex < Text.Len() && !FChar::IsWhitespace(Text[EndIndex]) && Text[EndIndex] != TEXT(')'))
             {
                 ++EndIndex;
             }
 
-            const FString Url = NormalizedText.Mid(Index, EndIndex - Index);
+            const FString Url = Text.Mid(Index, EndIndex - Index);
             Output.Append(FString::Printf(TEXT("<browser href=\"%s\">%s</>"), *EscapeRichText(Url), *EscapeRichText(Url)));
             Index = EndIndex;
             continue;
@@ -239,13 +185,13 @@ FString FAIGatewayMarkdownRichTextRenderer::RenderInlineMarkdown(const FString& 
 
         if (!bInInlineCode && CurrentChar == TEXT('['))
         {
-            const int32 CloseBracketIndex = NormalizedText.Find(TEXT("]"), ESearchCase::IgnoreCase, ESearchDir::FromStart, Index + 1);
-            const int32 OpenParenIndex = CloseBracketIndex == INDEX_NONE ? INDEX_NONE : NormalizedText.Find(TEXT("("), ESearchCase::IgnoreCase, ESearchDir::FromStart, CloseBracketIndex + 1);
-            const int32 CloseParenIndex = OpenParenIndex == INDEX_NONE ? INDEX_NONE : NormalizedText.Find(TEXT(")"), ESearchCase::IgnoreCase, ESearchDir::FromStart, OpenParenIndex + 1);
+            const int32 CloseBracketIndex = Text.Find(TEXT("]"), ESearchCase::IgnoreCase, ESearchDir::FromStart, Index + 1);
+            const int32 OpenParenIndex = CloseBracketIndex == INDEX_NONE ? INDEX_NONE : Text.Find(TEXT("("), ESearchCase::IgnoreCase, ESearchDir::FromStart, CloseBracketIndex + 1);
+            const int32 CloseParenIndex = OpenParenIndex == INDEX_NONE ? INDEX_NONE : Text.Find(TEXT(")"), ESearchCase::IgnoreCase, ESearchDir::FromStart, OpenParenIndex + 1);
             if (CloseBracketIndex != INDEX_NONE && OpenParenIndex == CloseBracketIndex + 1 && CloseParenIndex != INDEX_NONE)
             {
-                const FString Label = NormalizedText.Mid(Index + 1, CloseBracketIndex - Index - 1);
-                const FString Url = NormalizedText.Mid(OpenParenIndex + 1, CloseParenIndex - OpenParenIndex - 1);
+                const FString Label = Text.Mid(Index + 1, CloseBracketIndex - Index - 1);
+                const FString Url = Text.Mid(OpenParenIndex + 1, CloseParenIndex - OpenParenIndex - 1);
                 Output.Append(FString::Printf(TEXT("<browser href=\"%s\">%s</>"), *EscapeRichText(Url), *EscapeRichText(Label)));
                 Index = CloseParenIndex + 1;
                 continue;
@@ -286,23 +232,28 @@ FString FAIGatewayMarkdownRichTextRenderer::RenderInlineMarkdown(const FString& 
 
 bool FAIGatewayMarkdownRichTextRenderer::TryExtractHeadingContent(const FString& MarkdownText, FString& OutHeadingContent)
 {
-    const FString NormalizedInput = NormalizeMarkdownGlyphs(MarkdownText);
-    const FString Trimmed = NormalizedInput.TrimStartAndEnd();
-    int32 HeadingLevel = 0;
-    FString HeadingContent;
-    if (TryParseAtxHeadingRichText(Trimmed, HeadingLevel, HeadingContent))
+    const FString Trimmed = MarkdownText.TrimStartAndEnd();
+
+    if (Trimmed.StartsWith(TEXT("### ")))
     {
-        OutHeadingContent = RenderInlineMarkdown(HeadingContent, false);
+        OutHeadingContent = RenderInlineMarkdown(Trimmed.RightChop(4), false);
+        return true;
+    }
+
+    if (Trimmed.StartsWith(TEXT("## ")))
+    {
+        OutHeadingContent = RenderInlineMarkdown(Trimmed.RightChop(3), false);
+        return true;
+    }
+
+    if (Trimmed.StartsWith(TEXT("# ")))
+    {
+        OutHeadingContent = RenderInlineMarkdown(Trimmed.RightChop(2), false);
         return true;
     }
 
     OutHeadingContent.Empty();
     return false;
-}
-
-FString FAIGatewayMarkdownRichTextRenderer::NormalizeForDisplay(const FString& Text)
-{
-    return NormalizeMarkdownGlyphs(Text);
 }
 
 FString FAIGatewayMarkdownRichTextRenderer::EscapeRichText(const FString& Text)

@@ -16,9 +16,11 @@ public class AIGatewayEditor : ModuleRules
         PrivateDependencyModuleNames.AddRange(new string[]
         {
             "ApplicationCore",
+            "DesktopPlatform",
             "DeveloperSettings",
             "EditorStyle",
             "HTTP",
+            "ImageWrapper",
             "InputCore",
             "Json",
             "JsonUtilities",

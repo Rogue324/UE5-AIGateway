@@ -32,6 +32,7 @@ struct FAIGatewayChatSession
     FDateTime CreatedAt;
     FDateTime UpdatedAt;
     FString DraftPrompt;
+    TArray<FString> PendingImagePaths;
     TArray<FAIGatewayChatMessage> ConversationMessages;
     TArray<TSharedPtr<FJsonObject>> RequestMessages;
 
@@ -71,6 +72,9 @@ struct FAIGatewayChatPanelViewState
     TArray<FAIGatewaySessionTabViewData> Sessions;
     TArray<FAIGatewayChatMessage> VisibleMessages;
     FAIGatewayToolConfirmationViewData ToolConfirmation;
+    FString ContextSummary;
+    FString PendingAttachmentSummary;
+    TArray<FString> PendingAttachmentPaths;
     FString DraftPrompt;
     FString Model;
     FString StatusMessage;

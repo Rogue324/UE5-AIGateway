@@ -18,6 +18,7 @@ private:
 
     TSharedPtr<class FAIGatewayChatController> ChatController;
     TSharedPtr<class SEditableTextBox> ModelTextBox;
+    TSharedPtr<class STextBlock> ContextTextBlock;
     TSharedPtr<class STextBlock> StatusTextBlock;
     TSharedPtr<class SAIGatewaySessionTabBar> SessionTabBar;
     TSharedPtr<class SAIGatewayConversationView> ConversationView;

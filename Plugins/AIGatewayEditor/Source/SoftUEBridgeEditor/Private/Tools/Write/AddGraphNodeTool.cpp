@@ -26,235 +26,6 @@
 #include "Animation/AnimBlueprint.h"
 #include "AnimGraphNode_LinkedAnimLayer.h"
 
-namespace
-{
-	UClass* ResolveGraphNodeOwnerClass(const FString& ClassName)
-	{
-		if (ClassName.IsEmpty())
-		{
-			return nullptr;
-		}
-
-		FString ResolveError;
-		if (UClass* Class = FBridgePropertySerializer::ResolveClass(ClassName, ResolveError))
-		{
-			return Class;
-		}
-
-		if (UClass* Class = LoadClass<UObject>(nullptr, *ClassName))
-		{
-			return Class;
-		}
-
-		if (!ClassName.EndsWith(TEXT("_C")))
-		{
-			if (UClass* Class = LoadClass<UObject>(nullptr, *(ClassName + TEXT("_C"))))
-			{
-				return Class;
-			}
-		}
-
-		if (UClass* Class = FindFirstObject<UClass>(*ClassName, EFindFirstObjectOptions::ExactClass))
-		{
-			return Class;
-		}
-
-		if (!ClassName.StartsWith(TEXT("U")))
-		{
-			if (UClass* Class = FindFirstObject<UClass>(*(TEXT("U") + ClassName), EFindFirstObjectOptions::ExactClass))
-			{
-				return Class;
-			}
-		}
-
-		if (!ClassName.StartsWith(TEXT("A")))
-		{
-			if (UClass* Class = FindFirstObject<UClass>(*(TEXT("A") + ClassName), EFindFirstObjectOptions::ExactClass))
-			{
-				return Class;
-			}
-		}
-
-		return nullptr;
-	}
-
-	UClass* GetBlueprintDefaultOwnerClass(const UBlueprint* Blueprint)
-	{
-		if (!Blueprint)
-		{
-			return nullptr;
-		}
-
-		return Blueprint->GeneratedClass ? Blueprint->GeneratedClass : Blueprint->ParentClass;
-	}
-
-	bool TryReadStringField(const TSharedPtr<FJsonObject>& Object, const FString& FieldName, FString& OutValue)
-	{
-		return Object.IsValid() && Object->TryGetStringField(FieldName, OutValue) && !OutValue.IsEmpty();
-	}
-
-	bool TryReadNestedStringField(const TSharedPtr<FJsonObject>& Object, const FString& ObjectField, const FString& StringField, FString& OutValue)
-	{
-		const TSharedPtr<FJsonObject>* NestedObject = nullptr;
-		return Object.IsValid()
-			&& Object->TryGetObjectField(ObjectField, NestedObject)
-			&& NestedObject
-			&& NestedObject->IsValid()
-			&& (*NestedObject)->TryGetStringField(StringField, OutValue)
-			&& !OutValue.IsEmpty();
-	}
-
-	FString ExtractFunctionName(const TSharedPtr<FJsonObject>& Properties)
-	{
-		FString FunctionName;
-		if (TryReadStringField(Properties, TEXT("function_name"), FunctionName)
-			|| TryReadStringField(Properties, TEXT("FunctionName"), FunctionName)
-			|| TryReadStringField(Properties, TEXT("MemberName"), FunctionName)
-			|| TryReadStringField(Properties, TEXT("FunctionReference.MemberName"), FunctionName)
-			|| TryReadNestedStringField(Properties, TEXT("FunctionReference"), TEXT("MemberName"), FunctionName))
-		{
-			return FunctionName;
-		}
-
-		return FString();
-	}
-
-	FString ExtractOwnerClassName(const TSharedPtr<FJsonObject>& Properties)
-	{
-		FString OwnerClassName;
-		if (TryReadStringField(Properties, TEXT("owner_class"), OwnerClassName)
-			|| TryReadStringField(Properties, TEXT("OwnerClass"), OwnerClassName)
-			|| TryReadStringField(Properties, TEXT("MemberParent"), OwnerClassName)
-			|| TryReadStringField(Properties, TEXT("FunctionReference.MemberParent"), OwnerClassName)
-			|| TryReadNestedStringField(Properties, TEXT("FunctionReference"), TEXT("MemberParent"), OwnerClassName))
-		{
-			return OwnerClassName;
-		}
-
-		return FString();
-	}
-
-	FString ExtractVariableName(const TSharedPtr<FJsonObject>& Properties)
-	{
-		FString VariableName;
-		if (TryReadStringField(Properties, TEXT("variable_name"), VariableName)
-			|| TryReadStringField(Properties, TEXT("VariableName"), VariableName)
-			|| TryReadStringField(Properties, TEXT("MemberName"), VariableName)
-			|| TryReadStringField(Properties, TEXT("VariableReference.MemberName"), VariableName)
-			|| TryReadNestedStringField(Properties, TEXT("VariableReference"), TEXT("MemberName"), VariableName))
-		{
-			return VariableName;
-		}
-
-		return FString();
-	}
-
-	void StripK2BindingPseudoProperties(const TSharedPtr<FJsonObject>& Properties)
-	{
-		if (!Properties.IsValid())
-		{
-			return;
-		}
-
-		Properties->RemoveField(TEXT("function_name"));
-		Properties->RemoveField(TEXT("FunctionName"));
-		Properties->RemoveField(TEXT("owner_class"));
-		Properties->RemoveField(TEXT("OwnerClass"));
-		Properties->RemoveField(TEXT("variable_name"));
-		Properties->RemoveField(TEXT("VariableName"));
-		Properties->RemoveField(TEXT("MemberName"));
-		Properties->RemoveField(TEXT("MemberParent"));
-		Properties->RemoveField(TEXT("FunctionReference.MemberName"));
-		Properties->RemoveField(TEXT("FunctionReference.MemberParent"));
-		Properties->RemoveField(TEXT("VariableReference.MemberName"));
-	}
-
-	UFunction* FindFunctionForGraphNode(UBlueprint* Blueprint, const FString& FunctionName, const FString& OwnerClassName, FString& OutError)
-	{
-		UClass* OwnerClass = !OwnerClassName.IsEmpty()
-			? ResolveGraphNodeOwnerClass(OwnerClassName)
-			: GetBlueprintDefaultOwnerClass(Blueprint);
-
-		if (!OwnerClass)
-		{
-			OutError = OwnerClassName.IsEmpty()
-				? TEXT("Blueprint has no generated or parent class; compile the Blueprint first or pass owner_class.")
-				: FString::Printf(TEXT("Owner class not found: %s"), *OwnerClassName);
-			return nullptr;
-		}
-
-		if (UFunction* Function = OwnerClass->FindFunctionByName(FName(*FunctionName), EIncludeSuperFlag::IncludeSuper))
-		{
-			return Function;
-		}
-
-		OutError = FString::Printf(TEXT("Function '%s' was not found on class '%s'."), *FunctionName, *OwnerClass->GetName());
-		return nullptr;
-	}
-
-	bool BindCallFunctionNode(UK2Node_CallFunction* CallNode, UBlueprint* Blueprint, const TSharedPtr<FJsonObject>& Properties, FString& OutError)
-	{
-		const FString FunctionName = ExtractFunctionName(Properties);
-		if (FunctionName.IsEmpty())
-		{
-			return true;
-		}
-
-		const FString OwnerClassName = ExtractOwnerClassName(Properties);
-		UFunction* Function = FindFunctionForGraphNode(Blueprint, FunctionName, OwnerClassName, OutError);
-		if (!Function)
-		{
-			return false;
-		}
-
-		CallNode->SetFromFunction(Function);
-		StripK2BindingPseudoProperties(Properties);
-		return true;
-	}
-
-	bool BindVariableNode(UK2Node* K2Node, UBlueprint* Blueprint, const TSharedPtr<FJsonObject>& Properties, FString& OutError)
-	{
-		const FString VariableName = ExtractVariableName(Properties);
-		if (VariableName.IsEmpty())
-		{
-			return true;
-		}
-
-		UClass* OwnerClass = GetBlueprintDefaultOwnerClass(Blueprint);
-		if (!OwnerClass)
-		{
-			OutError = TEXT("Blueprint has no generated or parent class; compile the Blueprint first.");
-			return false;
-		}
-
-		if (UK2Node_VariableGet* GetNode = Cast<UK2Node_VariableGet>(K2Node))
-		{
-			if (FProperty* Property = FindFProperty<FProperty>(OwnerClass, FName(*VariableName)))
-			{
-				GetNode->VariableReference.SetFromField<FProperty>(Property, OwnerClass);
-			}
-			else
-			{
-				GetNode->VariableReference.SetSelfMember(FName(*VariableName));
-			}
-		}
-		else if (UK2Node_VariableSet* SetNode = Cast<UK2Node_VariableSet>(K2Node))
-		{
-			if (FProperty* Property = FindFProperty<FProperty>(OwnerClass, FName(*VariableName)))
-			{
-				SetNode->VariableReference.SetFromField<FProperty>(Property, OwnerClass);
-			}
-			else
-			{
-				SetNode->VariableReference.SetSelfMember(FName(*VariableName));
-			}
-		}
-
-		StripK2BindingPseudoProperties(Properties);
-		return true;
-	}
-}
-
 FString UAddGraphNodeTool::GetToolDescription() const
 {
 	return TEXT("Add a node to a Blueprint or Material graph by class name with intelligent auto-positioning. "
@@ -263,8 +34,6 @@ FString UAddGraphNodeTool::GetToolDescription() const
 		"Auto-positioning (enabled by default) places nodes intelligently to avoid overlaps. "
 		"Use 'connect_to_node' and 'connect_to_pin' for connection-based layout (execution flows right, data flows left/down). "
 		"Properties can be set via the 'properties' parameter. "
-		"For K2Node_CallFunction, pass properties like {'function_name':'SetActorLocation','owner_class':'Actor'} so the node is bound before pins are allocated. "
-		"For K2Node_VariableGet/Set, pass properties like {'variable_name':'MoveSpeed'}. "
 		"For AnimLayerInterfaces: use 'AnimLayerFunction' to create an anim layer function graph "
 		"with Root and Input Pose nodes (requires graph_name parameter).");
 }
@@ -319,7 +88,7 @@ TMap<FString, FBridgeSchemaProperty> UAddGraphNodeTool::GetInputSchema() const
 
 	FBridgeSchemaProperty Properties;
 	Properties.Type = TEXT("object");
-	Properties.Description = TEXT("Properties to set on the node after creation. For K2Node_CallFunction use {'function_name':'SetActorLocation','owner_class':'Actor'}; for K2Node_VariableGet/Set use {'variable_name':'MoveSpeed'}.");
+	Properties.Description = TEXT("Properties to set on the node after creation (e.g., {'ParameterName': 'MyParam', 'DefaultValue': 1.0})");
 	Properties.bRequired = false;
 	Schema.Add(TEXT("properties"), Properties);
 
@@ -780,22 +549,21 @@ UEdGraphNode* UAddGraphNodeTool::CreateBlueprintNode(
 	// Special handling for certain node types that need extra setup
 	if (UK2Node* K2Node = Cast<UK2Node>(NewNode))
 	{
+		// For CallFunction nodes, try to set up the function reference from properties
 		if (UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(NewNode))
 		{
-			if (!BindCallFunctionNode(CallNode, Blueprint, Properties, OutError))
-			{
-				return nullptr;
-			}
+			// Function setup is handled via properties (FunctionReference.MemberName)
 		}
-		else if (NewNode->IsA<UK2Node_VariableGet>() || NewNode->IsA<UK2Node_VariableSet>())
+		else if (UK2Node_VariableGet* GetNode = Cast<UK2Node_VariableGet>(NewNode))
 		{
-			if (!BindVariableNode(K2Node, Blueprint, Properties, OutError))
-			{
-				return nullptr;
-			}
+			// Variable reference setup is handled via properties
+		}
+		else if (UK2Node_VariableSet* SetNode = Cast<UK2Node_VariableSet>(NewNode))
+		{
+			// Variable reference setup is handled via properties
 		}
 
-		// K2 nodes need function/variable references before this call; otherwise UE creates empty pins.
+		// Allocate default pins
 		K2Node->AllocateDefaultPins();
 	}
 	else

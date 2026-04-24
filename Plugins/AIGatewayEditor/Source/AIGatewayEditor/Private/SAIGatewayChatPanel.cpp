@@ -7,6 +7,10 @@
 #include "Chat/Widgets/SAIGatewayConversationView.h"
 #include "Chat/Widgets/SAIGatewaySessionTabBar.h"
 #include "Chat/Widgets/SAIGatewayToolConfirmationBar.h"
+#include "DesktopPlatformModule.h"
+#include "Framework/Application/SlateApplication.h"
+#include "IDesktopPlatform.h"
+#include "Misc/Paths.h"
 #include "Styling/CoreStyle.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Layout/SBorder.h"
@@ -82,6 +86,14 @@ void SAIGatewayChatPanel::Construct(const FArguments& InArgs)
         .Padding(8.0f, 8.0f)
         [
             SNew(SSeparator)
+        ]
+
+        + SVerticalBox::Slot()
+        .AutoHeight()
+        .Padding(8.0f, 0.0f, 8.0f, 4.0f)
+        [
+            SAssignNew(ContextTextBlock, STextBlock)
+            .AutoWrapText(true)
         ]
 
         + SVerticalBox::Slot()
@@ -163,6 +175,49 @@ void SAIGatewayChatPanel::Construct(const FArguments& InArgs)
                         ChatController->SubmitPrompt();
                     }
                 }))
+                .OnImageAttachRequested(FOnAIGatewayImageAttachRequested::CreateLambda([this]()
+                {
+                    if (!ChatController.IsValid())
+                    {
+                        return;
+                    }
+
+                    IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+                    if (DesktopPlatform == nullptr)
+                    {
+                        return;
+                    }
+
+                    TArray<FString> SelectedFiles;
+                    const void* ParentWindowHandle = FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr);
+                    const bool bDidChooseFile = DesktopPlatform->OpenFileDialog(
+                        const_cast<void*>(ParentWindowHandle),
+                        TEXT("Choose Images"),
+                        FPaths::ProjectDir(),
+                        TEXT(""),
+                        TEXT("Image Files|*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp"),
+                        EFileDialogFlags::Multiple,
+                        SelectedFiles);
+
+                    if (bDidChooseFile && SelectedFiles.Num() > 0)
+                    {
+                        ChatController->AddPendingImagePaths(SelectedFiles);
+                    }
+                }))
+                .OnImageClearRequested(FOnAIGatewayImageClearRequested::CreateLambda([this]()
+                {
+                    if (ChatController.IsValid())
+                    {
+                        ChatController->ClearPendingImages();
+                    }
+                }))
+                .OnImageRemoveRequested(FOnAIGatewayImageRemoveRequested::CreateLambda([this](const int32 ImageIndex)
+                {
+                    if (ChatController.IsValid())
+                    {
+                        ChatController->RemovePendingImageAt(ImageIndex);
+                    }
+                }))
             ]
         ]
 
@@ -222,6 +277,11 @@ void SAIGatewayChatPanel::RefreshFromController()
     if (StatusTextBlock.IsValid())
     {
         StatusTextBlock->SetText(FText::FromString(ViewState.StatusMessage));
+    }
+
+    if (ContextTextBlock.IsValid())
+    {
+        ContextTextBlock->SetText(FText::FromString(ViewState.ContextSummary));
     }
 
     if (SessionTabBar.IsValid())

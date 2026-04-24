@@ -2,199 +2,307 @@
 
 #include "Chat/Markdown/AIGatewayMarkdownParser.h"
 #include "Chat/Markdown/AIGatewayMarkdownRichTextRenderer.h"
-#include "Framework/Text/RichTextLayoutMarshaller.h"
+#include "Framework/Text/SlateHyperlinkRun.h"
+#include "HAL/PlatformProcess.h"
+#include "Styling/CoreStyle.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SGridPanel.h"
+#include "Widgets/SOverlay.h"
+#include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/SMultiLineEditableText.h"
+#include "Widgets/Text/SRichTextBlock.h"
 
 namespace
 {
-    FString ConvertLegacyCodeBlockTagsToMarkdown(const FString& InText)
+    void HandleBrowserLinkClicked(const FSlateHyperlinkRun::FMetadata& Metadata)
     {
-        FString Working = InText;
-        Working.ReplaceInline(TEXT("</MarkdownCodeBlock>"), TEXT("</>"));
-
-        const FString OpenTag = TEXT("<MarkdownCodeBlock>");
-        const FString CloseTag = TEXT("</>");
-        FString Result;
-        int32 SearchFrom = 0;
-
-        while (true)
+        const FString* Url = Metadata.Find(TEXT("href"));
+        if (Url != nullptr && !Url->IsEmpty())
         {
-            const int32 OpenIndex = Working.Find(OpenTag, ESearchCase::CaseSensitive, ESearchDir::FromStart, SearchFrom);
-            if (OpenIndex == INDEX_NONE)
+            FPlatformProcess::LaunchURL(**Url, nullptr, nullptr);
+        }
+    }
+
+    FString StripMarkdownInlineSyntax(const FString& InText)
+    {
+        FString Result = InText;
+        Result.ReplaceInline(TEXT("**"), TEXT(""));
+        Result.ReplaceInline(TEXT("__"), TEXT(""));
+        Result.ReplaceInline(TEXT("`"), TEXT(""));
+        Result.ReplaceInline(TEXT("</>"), TEXT(""));
+        Result.ReplaceInline(TEXT("<MarkdownBold>"), TEXT(""));
+        Result.ReplaceInline(TEXT("<MarkdownHeading>"), TEXT(""));
+
+        for (int32 Index = 0; Index < Result.Len();)
+        {
+            if (Result[Index] == TEXT('['))
             {
-                Result.Append(Working.Mid(SearchFrom));
-                break;
+                const int32 CloseBracketIndex = Result.Find(TEXT("]"), ESearchCase::CaseSensitive, ESearchDir::FromStart, Index + 1);
+                const int32 OpenParenIndex = CloseBracketIndex != INDEX_NONE ? Result.Find(TEXT("("), ESearchCase::CaseSensitive, ESearchDir::FromStart, CloseBracketIndex + 1) : INDEX_NONE;
+                const int32 CloseParenIndex = OpenParenIndex != INDEX_NONE ? Result.Find(TEXT(")"), ESearchCase::CaseSensitive, ESearchDir::FromStart, OpenParenIndex + 1) : INDEX_NONE;
+                if (CloseBracketIndex != INDEX_NONE && OpenParenIndex == CloseBracketIndex + 1 && CloseParenIndex != INDEX_NONE)
+                {
+                    const FString LinkText = Result.Mid(Index + 1, CloseBracketIndex - Index - 1);
+                    Result = Result.Left(Index) + LinkText + Result.Mid(CloseParenIndex + 1);
+                    Index += LinkText.Len();
+                    continue;
+                }
             }
 
-            Result.Append(Working.Mid(SearchFrom, OpenIndex - SearchFrom));
-            const int32 ContentStart = OpenIndex + OpenTag.Len();
-            const int32 CloseIndex = Working.Find(CloseTag, ESearchCase::CaseSensitive, ESearchDir::FromStart, ContentStart);
-            if (CloseIndex == INDEX_NONE)
-            {
-                Result.Append(Working.Mid(OpenIndex));
-                break;
-            }
-
-            const FString Inner = Working.Mid(ContentStart, CloseIndex - ContentStart).TrimStartAndEnd();
-            Result.Append(TEXT("```\n"));
-            Result.Append(Inner);
-            Result.Append(TEXT("\n```"));
-
-            SearchFrom = CloseIndex + CloseTag.Len();
+            ++Index;
         }
 
         return Result;
     }
 
-    FString RenderCodeBlockText(const FString& CodeText)
+    FString BuildPlainTextSelectionContent(const TArray<FAIGatewayMarkdownBlock>& Blocks)
     {
-        const FString NormalizedCodeText = FAIGatewayMarkdownRichTextRenderer::NormalizeForDisplay(CodeText);
-        TArray<FString> Lines;
-        FAIGatewayMarkdownParser::NormalizeLineEndings(NormalizedCodeText).ParseIntoArray(Lines, TEXT("\n"), false);
-        if (Lines.Num() == 0)
-        {
-            return TEXT("<MarkdownCodeBlock> </>");
-        }
+        FString PlainText;
 
-        FString Out;
-        for (int32 Index = 0; Index < Lines.Num(); ++Index)
+        for (int32 Index = 0; Index < Blocks.Num(); ++Index)
         {
-            if (Index > 0)
+            const FAIGatewayMarkdownBlock& Block = Blocks[Index];
+            if (!PlainText.IsEmpty())
             {
-                Out.Append(TEXT("\n"));
+                PlainText.Append(TEXT("\n\n"));
             }
 
-            Out.Append(FString::Printf(TEXT("<MarkdownCodeBlock>%s</>"), *FAIGatewayMarkdownRichTextRenderer::EscapeRichText(Lines[Index].IsEmpty() ? TEXT(" ") : Lines[Index])));
+            if (Block.Type == EAIGatewayMarkdownBlockType::CodeBlock)
+            {
+                PlainText.Append(Block.Text);
+                continue;
+            }
+
+            if (Block.Type == EAIGatewayMarkdownBlockType::Table)
+            {
+                for (int32 RowIndex = 0; RowIndex < Block.TableRows.Num(); ++RowIndex)
+                {
+                    if (RowIndex > 0)
+                    {
+                        PlainText.Append(TEXT("\n"));
+                    }
+
+                    const TArray<FString>& Row = Block.TableRows[RowIndex];
+                    for (int32 ColumnIndex = 0; ColumnIndex < Row.Num(); ++ColumnIndex)
+                    {
+                        if (ColumnIndex > 0)
+                        {
+                            PlainText.Append(TEXT("\t"));
+                        }
+                        PlainText.Append(StripMarkdownInlineSyntax(Row[ColumnIndex]));
+                    }
+                }
+                continue;
+            }
+
+            FString ParagraphText = Block.Text;
+            const FString Trimmed = ParagraphText.TrimStartAndEnd();
+            if (Trimmed.StartsWith(TEXT("### ")))
+            {
+                ParagraphText = Trimmed.RightChop(4);
+            }
+            else if (Trimmed.StartsWith(TEXT("## ")))
+            {
+                ParagraphText = Trimmed.RightChop(3);
+            }
+            else if (Trimmed.StartsWith(TEXT("# ")))
+            {
+                ParagraphText = Trimmed.RightChop(2);
+            }
+
+            PlainText.Append(StripMarkdownInlineSyntax(ParagraphText));
         }
 
-        return Out;
+        return PlainText;
     }
 
-    FString BuildTableLine(const TArray<FString>& Cells, const bool bBold)
+    TSharedRef<SRichTextBlock> CreateDisplayRichTextBlock(
+        const FString& RichText,
+        const FName& TextStyleName)
     {
-        FString Line;
-        for (int32 Index = 0; Index < Cells.Num(); ++Index)
-        {
-            if (Index > 0)
-            {
-                Line.Append(TEXT(" | "));
-            }
-
-            const FString CellText = FAIGatewayMarkdownRichTextRenderer::RenderInlineMarkdown(Cells[Index], true);
-            if (bBold)
-            {
-                Line.Append(FString::Printf(TEXT("<MarkdownBold>%s</>"), *CellText));
-            }
-            else
-            {
-                Line.Append(CellText);
-            }
-        }
-
-        return Line;
+        return SNew(SRichTextBlock)
+            .TextStyle(&FAIGatewayMarkdownRichTextRenderer::GetStyle().GetWidgetStyle<FTextBlockStyle>(TextStyleName))
+            .DecoratorStyleSet(&FAIGatewayMarkdownRichTextRenderer::GetStyle())
+            .Text(FText::FromString(RichText))
+            .AutoWrapText(true)
+            + SRichTextBlock::HyperlinkDecorator(TEXT("browser"), FSlateHyperlinkRun::FOnClick::CreateStatic(&HandleBrowserLinkClicked));
     }
 
-    FString BuildTableRichText(const FAIGatewayMarkdownBlock& Block)
+    const FTextBlockStyle& GetTransparentSelectionTextStyle()
     {
-        FString Result;
-        for (int32 RowIndex = 0; RowIndex < Block.TableRows.Num(); ++RowIndex)
+        static FTextBlockStyle Style = []()
         {
-            if (RowIndex > 0)
-            {
-                Result.Append(TEXT("\n"));
-            }
+            FTextBlockStyle NewStyle = FAIGatewayMarkdownRichTextRenderer::GetStyle().GetWidgetStyle<FTextBlockStyle>("MarkdownBody");
+            NewStyle.SetColorAndOpacity(FSlateColor(FLinearColor(1.0f, 1.0f, 1.0f, 0.02f)));
+            return NewStyle;
+        }();
 
-            const bool bIsHeader = RowIndex == 0;
-            Result.Append(BuildTableLine(Block.TableRows[RowIndex], bIsHeader));
-        }
-        return Result;
+        return Style;
     }
 }
 
 void SAIGatewayMarkdownMessageBody::Construct(const FArguments& InArgs)
 {
-    if (!RichTextMarshaller.IsValid())
+    const TArray<FAIGatewayMarkdownBlock> Blocks = FAIGatewayMarkdownParser::ParseBlocks(InArgs._MarkdownText);
+    TSharedRef<SVerticalBox> ContentBox = SNew(SVerticalBox);
+    FString CombinedRichText;
+    const FString PlainTextContent = BuildPlainTextSelectionContent(Blocks);
+
+    auto FlushCombinedRichText = [&](const bool bAddBottomPadding)
     {
-        const ISlateStyle& Style = FAIGatewayMarkdownRichTextRenderer::GetStyle();
-        RichTextMarshaller = FRichTextLayoutMarshaller::Create(TArray<TSharedRef<ITextDecorator>>(), &Style);
-    }
+        if (CombinedRichText.IsEmpty())
+        {
+            return;
+        }
 
-    ChildSlot
-    [
-        SAssignNew(RichTextWidget, SMultiLineEditableText)
-        .TextStyle(&FAIGatewayMarkdownRichTextRenderer::GetStyle().GetWidgetStyle<FTextBlockStyle>("MarkdownBody"))
-        .IsReadOnly(true)
-        .AllowContextMenu(true)
-        .AutoWrapText(true)
-        .Margin(FMargin(0.0f))
-        .ClearTextSelectionOnFocusLoss(false)
-        .SelectWordOnMouseDoubleClick(true)
-        .Marshaller(RichTextMarshaller)
-    ];
+        ContentBox->AddSlot()
+        .AutoHeight()
+        .Padding(0.0f, 0.0f, 0.0f, bAddBottomPadding ? 6.0f : 0.0f)
+        [
+            CreateDisplayRichTextBlock(CombinedRichText, TEXT("MarkdownBody"))
+        ];
 
-    RebuildContent(InArgs._MarkdownText);
-}
+        CombinedRichText.Empty();
+    };
 
-void SAIGatewayMarkdownMessageBody::SetMarkdownText(const FString& InMarkdownText)
-{
-    if (bHasBuiltContent && MarkdownText == InMarkdownText)
+    if (Blocks.Num() == 0)
     {
+        ContentBox->AddSlot()
+        .AutoHeight()
+        [
+            CreateDisplayRichTextBlock(TEXT("<MarkdownBody> </>"), TEXT("MarkdownBody"))
+        ];
+
+        ChildSlot
+        [
+            SNew(SOverlay)
+            + SOverlay::Slot()
+            [
+                ContentBox
+            ]
+            + SOverlay::Slot()
+            [
+                SNew(SMultiLineEditableText)
+                .Text(FText::FromString(TEXT(" ")))
+                .TextStyle(&GetTransparentSelectionTextStyle())
+                .IsReadOnly(true)
+                .AllowContextMenu(true)
+                .AutoWrapText(true)
+                .Margin(FMargin(0.0f))
+                .ClearTextSelectionOnFocusLoss(false)
+                .SelectWordOnMouseDoubleClick(true)
+            ]
+        ];
         return;
     }
 
-    RebuildContent(InMarkdownText);
-}
-
-FString SAIGatewayMarkdownMessageBody::BuildRenderableRichText(const FString& InMarkdownText) const
-{
-    const FString PreprocessedMarkdown = ConvertLegacyCodeBlockTagsToMarkdown(InMarkdownText);
-    const TArray<FAIGatewayMarkdownBlock> Blocks = FAIGatewayMarkdownParser::ParseBlocks(PreprocessedMarkdown);
-    if (Blocks.Num() == 0)
-    {
-        return TEXT(" ");
-    }
-
-    FString Output;
     for (int32 Index = 0; Index < Blocks.Num(); ++Index)
     {
         const FAIGatewayMarkdownBlock& Block = Blocks[Index];
+        const bool bAddBottomPadding = Index < Blocks.Num() - 1;
         FString HeadingContent;
-        FString BlockText;
+
+        if (Block.Type == EAIGatewayMarkdownBlockType::CodeBlock)
+        {
+            FlushCombinedRichText(true);
+
+            ContentBox->AddSlot()
+            .AutoHeight()
+            .Padding(0.0f, 0.0f, 0.0f, bAddBottomPadding ? 8.0f : 0.0f)
+            [
+                SNew(SBorder)
+                .BorderImage(FAIGatewayMarkdownRichTextRenderer::GetStyle().GetBrush("CodeBlockBubble"))
+                .Padding(FMargin(10.0f, 8.0f))
+                [
+                    SNew(SMultiLineEditableText)
+                    .Text(FText::FromString(Block.Text))
+                    .TextStyle(&FAIGatewayMarkdownRichTextRenderer::GetStyle().GetWidgetStyle<FTextBlockStyle>("MarkdownCodeBlock"))
+                    .Font(FCoreStyle::GetDefaultFontStyle("Mono", 10))
+                    .IsReadOnly(true)
+                    .AllowContextMenu(true)
+                    .AutoWrapText(true)
+                    .Margin(FMargin(0.0f))
+                ]
+            ];
+            continue;
+        }
+
+        if (Block.Type == EAIGatewayMarkdownBlockType::Table)
+        {
+            FlushCombinedRichText(true);
+
+            TSharedRef<SGridPanel> Grid = SNew(SGridPanel);
+            for (int32 RowIndex = 0; RowIndex < Block.TableRows.Num(); ++RowIndex)
+            {
+                const TArray<FString>& Row = Block.TableRows[RowIndex];
+                for (int32 ColumnIndex = 0; ColumnIndex < Row.Num(); ++ColumnIndex)
+                {
+                    const bool bIsHeader = RowIndex == 0;
+                    Grid->AddSlot(ColumnIndex, RowIndex)
+                    .Padding(1.0f)
+                    [
+                        SNew(SBorder)
+                        .BorderImage(FAIGatewayMarkdownRichTextRenderer::GetStyle().GetBrush(bIsHeader ? "TableHeaderBubble" : "TableCellBubble"))
+                        .Padding(FMargin(8.0f, 6.0f))
+                        [
+                            CreateDisplayRichTextBlock(
+                                FAIGatewayMarkdownRichTextRenderer::RenderMarkdownToRichText(Row[ColumnIndex], true),
+                                bIsHeader ? TEXT("MarkdownBold") : TEXT("MarkdownBody"))
+                        ]
+                    ];
+                }
+            }
+
+            ContentBox->AddSlot()
+            .AutoHeight()
+            .Padding(0.0f, 0.0f, 0.0f, bAddBottomPadding ? 8.0f : 0.0f)
+            [
+                Grid
+            ];
+            continue;
+        }
 
         if (FAIGatewayMarkdownRichTextRenderer::TryExtractHeadingContent(Block.Text, HeadingContent))
         {
-            BlockText = FString::Printf(TEXT("<MarkdownHeading>%s</>"), *HeadingContent);
-        }
-        else if (Block.Type == EAIGatewayMarkdownBlockType::CodeBlock)
-        {
-            BlockText = RenderCodeBlockText(Block.Text);
-        }
-        else if (Block.Type == EAIGatewayMarkdownBlockType::Table)
-        {
-            BlockText = BuildTableRichText(Block);
-        }
-        else
-        {
-            BlockText = FAIGatewayMarkdownRichTextRenderer::RenderMarkdownToRichText(Block.Text, true);
+            if (!CombinedRichText.IsEmpty())
+            {
+                CombinedRichText.Append(TEXT("\n\n"));
+            }
+            CombinedRichText.Append(FString::Printf(TEXT("<MarkdownHeading>%s</>"), *HeadingContent));
+            continue;
         }
 
-        if (!Output.IsEmpty())
+        if (!CombinedRichText.IsEmpty())
         {
-            Output.Append(TEXT("\n\n"));
+            CombinedRichText.Append(TEXT("\n\n"));
         }
-        Output.Append(BlockText.IsEmpty() ? TEXT(" ") : BlockText);
+        CombinedRichText.Append(FAIGatewayMarkdownRichTextRenderer::RenderMarkdownToRichText(Block.Text, true));
     }
 
-    return Output;
-}
+    FlushCombinedRichText(false);
 
-void SAIGatewayMarkdownMessageBody::RebuildContent(const FString& InMarkdownText)
-{
-    MarkdownText = InMarkdownText;
-    bHasBuiltContent = true;
-
-    if (RichTextWidget.IsValid())
-    {
-        RichTextWidget->SetText(FText::FromString(BuildRenderableRichText(MarkdownText)));
-    }
+    ChildSlot
+    [
+        SNew(SOverlay)
+        + SOverlay::Slot()
+        [
+            SNew(SBox)
+            .Visibility(EVisibility::HitTestInvisible)
+            [
+                ContentBox
+            ]
+        ]
+        + SOverlay::Slot()
+        [
+            SNew(SMultiLineEditableText)
+            .Text(FText::FromString(PlainTextContent.IsEmpty() ? TEXT(" ") : PlainTextContent))
+            .TextStyle(&GetTransparentSelectionTextStyle())
+            .IsReadOnly(true)
+            .AllowContextMenu(true)
+            .AutoWrapText(true)
+            .Margin(FMargin(0.0f))
+            .ClearTextSelectionOnFocusLoss(false)
+            .SelectWordOnMouseDoubleClick(true)
+        ]
+    ];
 }

@@ -2,43 +2,11 @@
 
 namespace
 {
-    bool TryParseAtxHeading(const FString& TrimmedLine, int32& OutLevel, FString& OutContent)
-    {
-        OutLevel = 0;
-        OutContent.Empty();
-
-        int32 HashCount = 0;
-        while (HashCount < TrimmedLine.Len() && TrimmedLine[HashCount] == TEXT('#') && HashCount < 6)
-        {
-            ++HashCount;
-        }
-
-        if (HashCount == 0)
-        {
-            return false;
-        }
-
-        int32 ContentStart = HashCount;
-        if (ContentStart < TrimmedLine.Len() && TrimmedLine[ContentStart] == TEXT(' '))
-        {
-            ++ContentStart;
-        }
-
-        if (ContentStart >= TrimmedLine.Len())
-        {
-            return false;
-        }
-
-        OutLevel = HashCount;
-        OutContent = TrimmedLine.Mid(ContentStart).TrimStartAndEnd();
-        return !OutContent.IsEmpty();
-    }
-
     bool IsMarkdownHeadingLine(const FString& TrimmedLine)
     {
-        int32 HeadingLevel = 0;
-        FString HeadingContent;
-        return TryParseAtxHeading(TrimmedLine, HeadingLevel, HeadingContent);
+        return TrimmedLine.StartsWith(TEXT("# ")) ||
+            TrimmedLine.StartsWith(TEXT("## ")) ||
+            TrimmedLine.StartsWith(TEXT("### "));
     }
 
     bool IsMarkdownTableLine(const FString& TrimmedLine)

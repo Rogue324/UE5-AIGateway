@@ -5,6 +5,8 @@
 #include "Chat/Services/AIGatewayChatSessionStore.h"
 #include "Delegates/Delegate.h"
 
+struct FAIGatewayToolResult;
+
 class FAIGatewayChatController : public TSharedFromThis<FAIGatewayChatController>
 {
 public:
@@ -17,6 +19,9 @@ public:
 
     void SetModel(const FString& InModel);
     void UpdateDraft(const FString& DraftText);
+    void AddPendingImagePaths(const TArray<FString>& ImagePaths);
+    void RemovePendingImageAt(int32 ImageIndex);
+    void ClearPendingImages();
     void SubmitPrompt();
     void CreateSession();
     void ActivateSession(const FString& SessionId);
@@ -45,6 +50,7 @@ private:
     void LoadModelFromSettings();
     bool SaveModelToSettings(FString& OutError) const;
     bool ResolveServiceSettings(FAIGatewayChatServiceSettings& OutSettings, FString& OutError) const;
+    FString BuildContextSummary(const FAIGatewayChatSession& Session) const;
 
     void AppendMessage(const FString& Role, const FString& Text);
     void UpsertLastMessage(const FString& Role, const FString& Text);
@@ -65,7 +71,7 @@ private:
     void FinalizeAssistantResponse();
     void AbortAssistantResponse();
     void ResetStreamingState();
-    void BeginUserTurn(const FString& UserPrompt);
+    void BeginUserTurn(const FString& UserDisplayText, const TSharedPtr<FJsonObject>& UserMessageObject);
     bool SendChatRequest();
     void ExecuteNextPendingToolCall();
     void ExecuteCurrentPendingToolCall(bool bApproved);
@@ -84,12 +90,13 @@ private:
         bool& bOutHadChoices) const;
     bool TryParseToolCallsFromMessage(const TSharedPtr<FJsonObject>& MessageObject, TArray<FAIGatewayPendingToolCall>& OutToolCalls) const;
 
-    TSharedPtr<FJsonObject> BuildUserMessageObject(const FString& UserPrompt) const;
+    TSharedPtr<FJsonObject> BuildUserMessageObject(const FString& UserPrompt, const TArray<FString>& ImagePaths, FString& OutError) const;
     TSharedPtr<FJsonObject> BuildAssistantMessageObject(const FString& AssistantContent, const TArray<FAIGatewayPendingToolCall>& ToolCalls) const;
     TSharedPtr<FJsonObject> BuildToolResultMessageObject(const FString& ToolCallId, const FString& Content) const;
     TArray<TSharedPtr<FJsonValue>> BuildRequestMessages() const;
     TArray<TSharedPtr<FJsonValue>> BuildToolDefinitions() const;
 
+    FString BuildPendingAttachmentSummary(const FAIGatewayChatSession& Session) const;
     FString ExtractErrorMessage(const FString& ResponseBody) const;
     FString FormatToolArgumentsSummary(const FAIGatewayPendingToolCall& ToolCall) const;
     void AppendToolCallMessages(const TArray<FAIGatewayPendingToolCall>& ToolCalls);

@@ -13,5 +13,9 @@ public:
     void Refresh(const FAIGatewayChatPanelViewState& ViewState);
 
 private:
+    bool AreMessagesUnchanged(const TArray<FAIGatewayChatMessage>& InMessages) const;
+
     TSharedPtr<class SScrollBox> ChatHistoryScrollBox;
+    TArray<FAIGatewayChatMessage> CachedMessages;
+    bool bCachedEmptyState = true;
 };

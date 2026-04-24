@@ -40,6 +40,7 @@ struct FAIGatewayChatSession
     TArray<FAIGatewayStreamingToolCall> StreamingToolCalls;
     FString PendingResponseBuffer;
     FString StreamedResponseCache;
+    FString StreamedReasoningCache;
     FString PendingUserPrompt;
     int32 CurrentToolRound = 0;
     int32 PendingToolCallIndex = INDEX_NONE;
@@ -80,6 +81,7 @@ struct FAIGatewayChatPanelViewState
     FString StatusMessage;
     FString SendButtonText;
     bool bCanSend = false;
+    bool bCanCancel = false;
     bool bCanEditSessions = true;
     bool bIsSending = false;
     bool bIsGeneratingTitle = false;

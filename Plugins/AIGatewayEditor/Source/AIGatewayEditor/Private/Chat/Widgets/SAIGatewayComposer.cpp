@@ -33,6 +33,7 @@ void SAIGatewayComposer::Construct(const FArguments& InArgs)
 {
     OnDraftChanged = InArgs._OnDraftChanged;
     OnSendRequested = InArgs._OnSendRequested;
+    OnCancelRequested = InArgs._OnCancelRequested;
     OnImageAttachRequested = InArgs._OnImageAttachRequested;
     OnImageClearRequested = InArgs._OnImageClearRequested;
     OnImageRemoveRequested = InArgs._OnImageRemoveRequested;
@@ -148,10 +149,17 @@ void SAIGatewayComposer::Construct(const FArguments& InArgs)
         .Padding(0.0f, 8.0f, 0.0f, 0.0f)
         [
             SAssignNew(SendButton, SButton)
-            .IsEnabled_Lambda([this]() { return bCanSend; })
+            .IsEnabled_Lambda([this]() { return bCanSend || bCanCancel; })
             .OnClicked_Lambda([this]()
             {
-                if (OnSendRequested.IsBound())
+                if (bCanCancel)
+                {
+                    if (OnCancelRequested.IsBound())
+                    {
+                        OnCancelRequested.Execute();
+                    }
+                }
+                else if (OnSendRequested.IsBound())
                 {
                     OnSendRequested.Execute();
                 }
@@ -171,6 +179,7 @@ void SAIGatewayComposer::Construct(const FArguments& InArgs)
 void SAIGatewayComposer::Refresh(const FAIGatewayChatPanelViewState& ViewState)
 {
     bCanSend = ViewState.bCanSend;
+    bCanCancel = ViewState.bCanCancel;
     PendingAttachmentSummary = ViewState.PendingAttachmentSummary;
     if (PendingAttachmentPaths != ViewState.PendingAttachmentPaths)
     {

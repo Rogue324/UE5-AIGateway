@@ -15,6 +15,7 @@ struct FAIGatewayChatCompletionRequest
 {
     TArray<TSharedPtr<FJsonValue>> Messages;
     TArray<TSharedPtr<FJsonValue>> Tools;
+    FString ToolChoice;
     bool bStream = true;
     int32 MaxTokens = 0;
 };
@@ -39,6 +40,8 @@ public:
         const FAIGatewayChatCompletionRequest& Request,
         FStreamChunkCallback&& OnStreamChunk,
         FRequestCompleteCallback&& OnComplete) = 0;
+
+    virtual void CancelActiveRequests() = 0;
 };
 
 class FAIGatewayOpenAIChatService : public IAIGatewayChatService, public TSharedFromThis<FAIGatewayOpenAIChatService>
@@ -49,6 +52,8 @@ public:
         const FAIGatewayChatCompletionRequest& Request,
         FStreamChunkCallback&& OnStreamChunk,
         FRequestCompleteCallback&& OnComplete) override;
+
+    virtual void CancelActiveRequests() override;
 
 private:
     struct FPendingServiceRequest;

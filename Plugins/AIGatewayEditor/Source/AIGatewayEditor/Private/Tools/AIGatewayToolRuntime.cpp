@@ -1,6 +1,7 @@
 #include "Tools/AIGatewayToolRuntime.h"
 
 #include "Editor.h"
+#include "Engine/Blueprint.h"
 #include "Engine/Selection.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -12,6 +13,11 @@
 
 namespace
 {
+    bool ShouldExposeBridgeToolToChatAgent(const FString& ToolName)
+    {
+        return !ToolName.Equals(TEXT("run-python-script"), ESearchCase::CaseSensitive);
+    }
+
     FString SerializeToolRuntimeJsonObject(const TSharedPtr<FJsonObject>& Object)
     {
         if (!Object.IsValid())
@@ -100,6 +106,117 @@ namespace
         }
 
         return SchemaObject;
+    }
+
+    TSharedPtr<FJsonObject> MakeJsonAnySchema(const FString& Description)
+    {
+        TSharedPtr<FJsonObject> SchemaObject = MakeShared<FJsonObject>();
+        if (!Description.IsEmpty())
+        {
+            SchemaObject->SetStringField(TEXT("description"), Description);
+        }
+
+        TArray<TSharedPtr<FJsonValue>> AnyOfArray;
+
+        auto AddAnyOfObject =
+            [&AnyOfArray](const FString& TypeName)
+        {
+            TSharedPtr<FJsonObject> TypeObject = MakeShared<FJsonObject>();
+            TypeObject->SetStringField(TEXT("type"), TypeName);
+            if (TypeName == TEXT("object"))
+            {
+                TypeObject->SetBoolField(TEXT("additionalProperties"), true);
+            }
+            else if (TypeName == TEXT("array"))
+            {
+                TSharedPtr<FJsonObject> ItemsObject = MakeShared<FJsonObject>();
+                ItemsObject->SetBoolField(TEXT("additionalProperties"), true);
+                AnyOfArray.Add(MakeShared<FJsonValueObject>(TypeObject));
+                return;
+            }
+
+            AnyOfArray.Add(MakeShared<FJsonValueObject>(TypeObject));
+        };
+
+        AddAnyOfObject(TEXT("string"));
+        AddAnyOfObject(TEXT("number"));
+        AddAnyOfObject(TEXT("integer"));
+        AddAnyOfObject(TEXT("boolean"));
+
+        TSharedPtr<FJsonObject> ObjectType = MakeShared<FJsonObject>();
+        ObjectType->SetStringField(TEXT("type"), TEXT("object"));
+        ObjectType->SetBoolField(TEXT("additionalProperties"), true);
+        AnyOfArray.Add(MakeShared<FJsonValueObject>(ObjectType));
+
+        TSharedPtr<FJsonObject> ArrayType = MakeShared<FJsonObject>();
+        ArrayType->SetStringField(TEXT("type"), TEXT("array"));
+        TSharedPtr<FJsonObject> ArrayItems = MakeShared<FJsonObject>();
+        ArrayItems->SetBoolField(TEXT("additionalProperties"), true);
+        ArrayType->SetObjectField(TEXT("items"), ArrayItems);
+        AnyOfArray.Add(MakeShared<FJsonValueObject>(ArrayType));
+
+        SchemaObject->SetArrayField(TEXT("anyOf"), AnyOfArray);
+        return SchemaObject;
+    }
+
+    TSharedPtr<FJsonObject> SanitizeOpenAIToolSchemaObject(const TSharedPtr<FJsonObject>& SchemaObject)
+    {
+        if (!SchemaObject.IsValid())
+        {
+            return nullptr;
+        }
+
+        TSharedPtr<FJsonObject> SanitizedObject = MakeShared<FJsonObject>();
+
+        for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : SchemaObject->Values)
+        {
+            if (!Pair.Value.IsValid() || Pair.Value->IsNull())
+            {
+                continue;
+            }
+
+            if (Pair.Key == TEXT("type"))
+            {
+                FString TypeName;
+                if (Pair.Value->TryGetString(TypeName) && TypeName.Equals(TEXT("any"), ESearchCase::IgnoreCase))
+                {
+                    const FString Description = SchemaObject->GetStringField(TEXT("description"));
+                    return MakeJsonAnySchema(Description);
+                }
+            }
+
+            if (Pair.Value->Type == EJson::Object)
+            {
+                SanitizedObject->SetObjectField(Pair.Key, SanitizeOpenAIToolSchemaObject(Pair.Value->AsObject()));
+            }
+            else if (Pair.Value->Type == EJson::Array)
+            {
+                TArray<TSharedPtr<FJsonValue>> SanitizedArray;
+                for (const TSharedPtr<FJsonValue>& Entry : Pair.Value->AsArray())
+                {
+                    if (!Entry.IsValid() || Entry->IsNull())
+                    {
+                        continue;
+                    }
+
+                    if (Entry->Type == EJson::Object)
+                    {
+                        SanitizedArray.Add(MakeShared<FJsonValueObject>(SanitizeOpenAIToolSchemaObject(Entry->AsObject())));
+                    }
+                    else
+                    {
+                        SanitizedArray.Add(Entry);
+                    }
+                }
+                SanitizedObject->SetArrayField(Pair.Key, SanitizedArray);
+            }
+            else
+            {
+                SanitizedObject->SetField(Pair.Key, Pair.Value);
+            }
+        }
+
+        return SanitizedObject;
     }
 
     EAIGatewayToolConfirmationPolicy GetConfirmationPolicy(const FString& ToolName)
@@ -281,9 +398,28 @@ FAIGatewayToolResult FAIGatewayToolRuntime::ExecuteTool(const FString& ToolName,
 
     if (ToolName == TEXT("set-blueprint-default"))
     {
+        const FString AssetPath = Arguments->GetStringField(TEXT("asset_path"));
+        const FString PropertyName = Arguments->GetStringField(TEXT("property_name"));
+
+        if (UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *AssetPath))
+        {
+            UObject* BlueprintCDO = Blueprint->GeneratedClass ? Blueprint->GeneratedClass->GetDefaultObject() : nullptr;
+            if (BlueprintCDO != nullptr)
+            {
+                FProperty* ExistingProperty = FindFProperty<FProperty>(BlueprintCDO->GetClass(), FName(*PropertyName));
+                if (ExistingProperty == nullptr)
+                {
+                    return FAIGatewayToolResult::Error(FString::Printf(
+                        TEXT("Blueprint property '%s' was not found on '%s'. set-blueprint-default edits existing properties only; it cannot create Blueprint variables. Use add-blueprint-variable first, then set-blueprint-default if you need to change the default value."),
+                        *PropertyName,
+                        *AssetPath));
+                }
+            }
+        }
+
         TSharedPtr<FJsonObject> BridgeArgs = MakeShared<FJsonObject>();
-        BridgeArgs->SetStringField(TEXT("asset_path"), Arguments->GetStringField(TEXT("asset_path")));
-        BridgeArgs->SetStringField(TEXT("property_path"), Arguments->GetStringField(TEXT("property_name")));
+        BridgeArgs->SetStringField(TEXT("asset_path"), AssetPath);
+        BridgeArgs->SetStringField(TEXT("property_path"), PropertyName);
         BridgeArgs->SetField(TEXT("value"), Arguments->TryGetField(TEXT("value")));
         return ConvertBridgeResult(TEXT("set-asset-property"), FBridgeToolRegistry::Get().ExecuteTool(TEXT("set-asset-property"), BridgeArgs, Context));
     }
@@ -390,10 +526,15 @@ void FAIGatewayToolRuntime::BuildDefinitions()
 
     for (const FBridgeToolDefinition& BridgeDefinition : FBridgeToolRegistry::Get().GetAllToolDefinitions())
     {
+        if (!ShouldExposeBridgeToolToChatAgent(BridgeDefinition.Name))
+        {
+            continue;
+        }
+
         TSharedPtr<FJsonObject> PropertiesObject = MakeShared<FJsonObject>();
         for (const TPair<FString, FBridgeSchemaProperty>& Pair : BridgeDefinition.InputSchema)
         {
-            PropertiesObject->SetObjectField(Pair.Key, Pair.Value.ToJson());
+            PropertiesObject->SetObjectField(Pair.Key, SanitizeOpenAIToolSchemaObject(Pair.Value.ToJson()));
         }
 
         TSharedPtr<FJsonObject> SchemaObject = MakeShared<FJsonObject>();

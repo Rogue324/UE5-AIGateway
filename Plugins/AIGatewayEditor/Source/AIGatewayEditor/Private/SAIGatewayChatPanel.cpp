@@ -175,6 +175,13 @@ void SAIGatewayChatPanel::Construct(const FArguments& InArgs)
                         ChatController->SubmitPrompt();
                     }
                 }))
+                .OnCancelRequested(FOnAIGatewayCancelRequested::CreateLambda([this]()
+                {
+                    if (ChatController.IsValid())
+                    {
+                        ChatController->CancelCurrentWork();
+                    }
+                }))
                 .OnImageAttachRequested(FOnAIGatewayImageAttachRequested::CreateLambda([this]()
                 {
                     if (!ChatController.IsValid())

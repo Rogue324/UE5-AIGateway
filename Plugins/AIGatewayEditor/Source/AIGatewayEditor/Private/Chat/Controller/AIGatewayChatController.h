@@ -23,6 +23,7 @@ public:
     void RemovePendingImageAt(int32 ImageIndex);
     void ClearPendingImages();
     void SubmitPrompt();
+    void CancelCurrentWork();
     void CreateSession();
     void ActivateSession(const FString& SessionId);
     void CloseSession(const FString& SessionId);
@@ -35,6 +36,7 @@ public:
 private:
     void BroadcastStateChanged();
     bool CanSendRequest() const;
+    bool CanCancelWork() const;
     bool CanEditSessions() const;
     bool IsAwaitingToolConfirmation() const;
     bool IsGeneratingTitle() const;
@@ -78,20 +80,21 @@ private:
     void ResumeAfterToolConfirmation(bool bApproved);
     void FinishTurnWithError(const FString& ErrorMessage, bool bKeepAssistantPlaceholder = false);
 
-    void HandleChatResponse(const FAIGatewayChatServiceResponse& Response);
-    void HandleStreamingPayloadChunk(const FString& ChunkText);
+    void HandleChatResponse(int32 RequestSerial, const FAIGatewayChatServiceResponse& Response);
+    void HandleStreamingPayloadChunk(int32 RequestSerial, const FString& ChunkText);
     bool HandleStreamingLine(const FString& LineText);
     bool TryAppendAssistantDelta(const TSharedPtr<FJsonObject>& ChoiceObject);
     bool TryAppendToolCallDelta(const TSharedPtr<FJsonObject>& ChoiceObject);
     bool ParseChatCompletionPayload(
         const FString& ResponseBody,
         FString& OutAssistantContent,
+        FString& OutReasoningContent,
         TArray<FAIGatewayPendingToolCall>& OutToolCalls,
         bool& bOutHadChoices) const;
     bool TryParseToolCallsFromMessage(const TSharedPtr<FJsonObject>& MessageObject, TArray<FAIGatewayPendingToolCall>& OutToolCalls) const;
 
     TSharedPtr<FJsonObject> BuildUserMessageObject(const FString& UserPrompt, const TArray<FString>& ImagePaths, FString& OutError) const;
-    TSharedPtr<FJsonObject> BuildAssistantMessageObject(const FString& AssistantContent, const TArray<FAIGatewayPendingToolCall>& ToolCalls) const;
+    TSharedPtr<FJsonObject> BuildAssistantMessageObject(const FString& AssistantContent, const FString& ReasoningContent, const TArray<FAIGatewayPendingToolCall>& ToolCalls) const;
     TSharedPtr<FJsonObject> BuildToolResultMessageObject(const FString& ToolCallId, const FString& Content) const;
     TArray<TSharedPtr<FJsonValue>> BuildRequestMessages() const;
     TArray<TSharedPtr<FJsonValue>> BuildToolDefinitions() const;
@@ -111,5 +114,7 @@ private:
     FString CurrentModel;
     FString StatusMessage;
     bool bIsSending = false;
+    int32 NextRequestSerial = 0;
+    int32 ActiveRequestSerial = 0;
     FSimpleMulticastDelegate StateChangedDelegate;
 };

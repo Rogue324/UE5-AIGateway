@@ -20,6 +20,36 @@ namespace
     constexpr int32 PhotoJpegQuality = 82;
     constexpr int32 ScreenshotFallbackJpegQuality = 90;
 
+    FString BuildAgentSystemPrompt()
+    {
+        return TEXT(
+            "You are AI Gateway, a native Unreal Engine editor agent running inside the user's editor.\n"
+            "You can inspect and operate the live UE editor through the provided tools. Treat these tools as your primary source of truth for questions about the current project, level, actors, assets, Blueprints, PIE state, logs, console variables, or editor configuration.\n"
+            "When the user asks about current editor or project state, do not guess from memory. Call the relevant tool first, then answer from the tool result.\n"
+            "Prefer a small number of targeted tool calls. Do not repeatedly call the same tool with the same arguments.\n"
+            "Python scripting is not available to this chat agent. Never say you will use Python, never generate Python scripts, and never switch to Python when a task is complex. Ignore any earlier assistant message that suggested using Python.\n"
+            "Use only the provided native tools. If a task cannot be completed with the native tools, explain the limitation instead of proposing Python.\n"
+            "For adding components to actors, use add-component. Do not write Python for component creation when add-component is available.\n"
+            "The add-blueprint-variable tool is available in this environment. Never claim it is unavailable unless a tool call actually returned an error proving otherwise.\n"
+            "For creating Blueprint member variables, use add-blueprint-variable. Do not use Python for Blueprint variable creation.\n"
+            "Never use set-blueprint-default or set-asset-property to create Blueprint variable definitions. Those tools edit existing properties only; they do not create new Blueprint variables.\n"
+            "Never attempt to create Blueprint variables implicitly by placing Set/Get nodes. Blueprint variables must be created explicitly with add-blueprint-variable before any variable_get or variable_set node is added.\n"
+            "Prefer add-blueprint-k2-node over low-level add-graph-node for Blueprint function calls and Blueprint variable get/set nodes because it performs the correct binding and validation.\n"
+            "Do not create K2Node_AddComponent through add-graph-node. That node path is unsupported here and can trigger editor assertions. Use add-component for existing level actors, and if the request is about Blueprint-owned components, explain the current limitation instead of forcing a node.\n"
+            "For Blueprint EventGraph logic, build incrementally with add-blueprint-k2-node, add-blueprint-variable, query-blueprint-graph, connect-graph-pins, set-node-property, set-node-position, compile-blueprint, and save-asset. Do not use or propose Python for Blueprint graph construction.\n"
+            "After you have enough information, stop calling tools and give the final answer.\n"
+            "For destructive or state-changing actions, explain the intended action briefly and rely on the editor confirmation flow when approval is required.\n"
+            "Reply in the user's language unless the user asks otherwise.");
+    }
+
+    TSharedPtr<FJsonObject> BuildAgentSystemMessageObject()
+    {
+        TSharedPtr<FJsonObject> MessageObject = MakeShared<FJsonObject>();
+        MessageObject->SetStringField(TEXT("role"), TEXT("system"));
+        MessageObject->SetStringField(TEXT("content"), BuildAgentSystemPrompt());
+        return MessageObject;
+    }
+
     FString SerializeJsonObject(const TSharedPtr<FJsonObject>& Object)
     {
         if (!Object.IsValid())
@@ -31,6 +61,24 @@ namespace
         TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Output);
         FJsonSerializer::Serialize(Object.ToSharedRef(), Writer);
         return Output;
+    }
+
+    FString NormalizeToolArgumentsJson(const FString& ArgumentsJson)
+    {
+        const FString TrimmedJson = ArgumentsJson.TrimStartAndEnd();
+        if (TrimmedJson.IsEmpty())
+        {
+            return TEXT("{}");
+        }
+
+        TSharedPtr<FJsonObject> Object;
+        TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(TrimmedJson);
+        if (FJsonSerializer::Deserialize(Reader, Object) && Object.IsValid())
+        {
+            return SerializeJsonObject(Object);
+        }
+
+        return TEXT("{}");
     }
 
     TSharedPtr<FJsonObject> ParseJsonObject(const FString& JsonText)
@@ -50,6 +98,73 @@ namespace
         TSharedPtr<FJsonObject> FallbackObject = MakeShared<FJsonObject>();
         FallbackObject->SetStringField(TEXT("__raw_arguments"), JsonText);
         return FallbackObject;
+    }
+
+    bool TryReadFunctionArgumentsJson(const TSharedPtr<FJsonObject>& FunctionObject, FString& OutArgumentsJson)
+    {
+        OutArgumentsJson = TEXT("{}");
+        if (!FunctionObject.IsValid())
+        {
+            return false;
+        }
+
+        FString ArgumentsString;
+        if (FunctionObject->TryGetStringField(TEXT("arguments"), ArgumentsString))
+        {
+            OutArgumentsJson = NormalizeToolArgumentsJson(ArgumentsString);
+            return true;
+        }
+
+        const TSharedPtr<FJsonObject>* ArgumentsObject = nullptr;
+        if (FunctionObject->TryGetObjectField(TEXT("arguments"), ArgumentsObject) && ArgumentsObject != nullptr && (*ArgumentsObject).IsValid())
+        {
+            OutArgumentsJson = SerializeJsonObject(*ArgumentsObject);
+            return true;
+        }
+
+        return false;
+    }
+
+    TSharedPtr<FJsonObject> SanitizeRequestMessageObject(const TSharedPtr<FJsonObject>& MessageObject)
+    {
+        if (!MessageObject.IsValid())
+        {
+            return nullptr;
+        }
+
+        TSharedPtr<FJsonObject> SanitizedObject = ParseJsonObject(SerializeJsonObject(MessageObject));
+
+        FString Role;
+        SanitizedObject->TryGetStringField(TEXT("role"), Role);
+        if (!Role.Equals(TEXT("assistant"), ESearchCase::IgnoreCase))
+        {
+            return SanitizedObject;
+        }
+
+        const TArray<TSharedPtr<FJsonValue>>* ToolCalls = nullptr;
+        if (!SanitizedObject->TryGetArrayField(TEXT("tool_calls"), ToolCalls))
+        {
+            return SanitizedObject;
+        }
+
+        for (const TSharedPtr<FJsonValue>& ToolCallValue : *ToolCalls)
+        {
+            const TSharedPtr<FJsonObject>* ToolCallObject = nullptr;
+            if (!ToolCallValue.IsValid() || !ToolCallValue->TryGetObject(ToolCallObject) || ToolCallObject == nullptr || !(*ToolCallObject).IsValid())
+            {
+                continue;
+            }
+
+            const TSharedPtr<FJsonObject>* FunctionObject = nullptr;
+            if ((*ToolCallObject)->TryGetObjectField(TEXT("function"), FunctionObject) && FunctionObject != nullptr && (*FunctionObject).IsValid())
+            {
+                FString NormalizedArgumentsJson;
+                TryReadFunctionArgumentsJson(*FunctionObject, NormalizedArgumentsJson);
+                (*FunctionObject)->SetStringField(TEXT("arguments"), NormalizedArgumentsJson);
+            }
+        }
+
+        return SanitizedObject;
     }
 
     FString TruncateWithEllipsis(const FString& InText, const int32 MaxLength)
@@ -124,6 +239,34 @@ namespace
         return CombinedText;
     }
 
+    FString ExtractTextFromOutputItems(const TArray<TSharedPtr<FJsonValue>>& OutputItems)
+    {
+        FString CombinedText;
+        for (const TSharedPtr<FJsonValue>& ItemValue : OutputItems)
+        {
+            const TSharedPtr<FJsonObject>* ItemObject = nullptr;
+            if (!ItemValue.IsValid() || !ItemValue->TryGetObject(ItemObject) || ItemObject == nullptr || !(*ItemObject).IsValid())
+            {
+                continue;
+            }
+
+            FString DirectText;
+            if ((*ItemObject)->TryGetStringField(TEXT("text"), DirectText) && !DirectText.IsEmpty())
+            {
+                CombinedText.Append(DirectText);
+                continue;
+            }
+
+            const TArray<TSharedPtr<FJsonValue>>* ContentArray = nullptr;
+            if ((*ItemObject)->TryGetArrayField(TEXT("content"), ContentArray) && ContentArray != nullptr && ContentArray->Num() > 0)
+            {
+                CombinedText.Append(ExtractTextFromContentParts(*ContentArray));
+            }
+        }
+
+        return CombinedText;
+    }
+
     FString ExtractAssistantContentFromMessage(const TSharedPtr<FJsonObject>& MessageObject)
     {
         if (!MessageObject.IsValid())
@@ -144,6 +287,241 @@ namespace
         }
 
         return FString();
+    }
+
+    FString ExtractAssistantContentFromResponseObject(const TSharedPtr<FJsonObject>& ResponseObject)
+    {
+        if (!ResponseObject.IsValid())
+        {
+            return FString();
+        }
+
+        FString OutputText;
+        if (ResponseObject->TryGetStringField(TEXT("output_text"), OutputText) && !OutputText.IsEmpty())
+        {
+            return OutputText;
+        }
+
+        const TArray<TSharedPtr<FJsonValue>>* OutputArray = nullptr;
+        if (ResponseObject->TryGetArrayField(TEXT("output"), OutputArray) && OutputArray != nullptr && OutputArray->Num() > 0)
+        {
+            const FString CombinedOutput = ExtractTextFromOutputItems(*OutputArray);
+            if (!CombinedOutput.IsEmpty())
+            {
+                return CombinedOutput;
+            }
+        }
+
+        const TSharedPtr<FJsonObject>* NestedResponse = nullptr;
+        if (ResponseObject->TryGetObjectField(TEXT("response"), NestedResponse) && NestedResponse != nullptr && (*NestedResponse).IsValid())
+        {
+            return ExtractAssistantContentFromResponseObject(*NestedResponse);
+        }
+
+        return FString();
+    }
+
+    FString ExtractReasoningContentFromMessage(const TSharedPtr<FJsonObject>& MessageObject)
+    {
+        if (!MessageObject.IsValid())
+        {
+            return FString();
+        }
+
+        FString ReasoningContent;
+        if (MessageObject->TryGetStringField(TEXT("reasoning_content"), ReasoningContent) && !ReasoningContent.IsEmpty())
+        {
+            return ReasoningContent;
+        }
+
+        const TArray<TSharedPtr<FJsonValue>>* ContentArray = nullptr;
+        if (MessageObject->TryGetArrayField(TEXT("reasoning_content"), ContentArray) && ContentArray != nullptr && ContentArray->Num() > 0)
+        {
+            return ExtractTextFromContentParts(*ContentArray);
+        }
+
+        return FString();
+    }
+
+    bool TryExtractOutputTextDelta(const TSharedPtr<FJsonObject>& StreamObject, FString& OutDelta)
+    {
+        OutDelta.Empty();
+        if (!StreamObject.IsValid())
+        {
+            return false;
+        }
+
+        FString EventType;
+        StreamObject->TryGetStringField(TEXT("type"), EventType);
+        if (EventType.Contains(TEXT("output_text.delta")))
+        {
+            return StreamObject->TryGetStringField(TEXT("delta"), OutDelta) && !OutDelta.IsEmpty();
+        }
+
+        auto TryExtractFlexibleTextFromValue =
+            [](const TSharedPtr<FJsonValue>& JsonValue, FString& OutText, const auto& Self) -> bool
+        {
+            OutText.Empty();
+            if (!JsonValue.IsValid() || JsonValue->IsNull())
+            {
+                return false;
+            }
+
+            if (JsonValue->Type == EJson::String)
+            {
+                OutText = JsonValue->AsString();
+                return !OutText.IsEmpty();
+            }
+
+            if (JsonValue->Type == EJson::Array)
+            {
+                FString CombinedText;
+                const TArray<TSharedPtr<FJsonValue>>& JsonArray = JsonValue->AsArray();
+                for (const TSharedPtr<FJsonValue>& Entry : JsonArray)
+                {
+                    FString EntryText;
+                    if (Self(Entry, EntryText, Self) && !EntryText.IsEmpty())
+                    {
+                        CombinedText.Append(EntryText);
+                    }
+                }
+
+                if (!CombinedText.IsEmpty())
+                {
+                    OutText = CombinedText;
+                    return true;
+                }
+
+                return false;
+            }
+
+            if (JsonValue->Type != EJson::Object)
+            {
+                return false;
+            }
+
+            const TSharedPtr<FJsonObject> JsonObject = JsonValue->AsObject();
+            if (!JsonObject.IsValid())
+            {
+                return false;
+            }
+
+            static const TCHAR* PreferredKeys[] =
+            {
+                TEXT("text"),
+                TEXT("value"),
+                TEXT("content"),
+                TEXT("delta")
+            };
+
+            for (const TCHAR* Key : PreferredKeys)
+            {
+                const TSharedPtr<FJsonValue>* NestedValue = JsonObject->Values.Find(Key);
+                if (NestedValue == nullptr || !NestedValue->IsValid())
+                {
+                    continue;
+                }
+
+                FString NestedText;
+                if (Self(*NestedValue, NestedText, Self) && !NestedText.IsEmpty())
+                {
+                    OutText = NestedText;
+                    return true;
+                }
+            }
+
+            return false;
+        };
+
+        const TSharedPtr<FJsonObject>* DeltaObject = nullptr;
+        if (StreamObject->TryGetObjectField(TEXT("delta"), DeltaObject) && DeltaObject != nullptr && (*DeltaObject).IsValid())
+        {
+            const TSharedPtr<FJsonValue>* DeltaValue = (*DeltaObject)->Values.Find(TEXT("text"));
+            if (DeltaValue != nullptr && TryExtractFlexibleTextFromValue(*DeltaValue, OutDelta, TryExtractFlexibleTextFromValue) && !OutDelta.IsEmpty())
+            {
+                return true;
+            }
+
+            const TSharedPtr<FJsonValue>* ContentValue = (*DeltaObject)->Values.Find(TEXT("content"));
+            if (ContentValue != nullptr && TryExtractFlexibleTextFromValue(*ContentValue, OutDelta, TryExtractFlexibleTextFromValue) && !OutDelta.IsEmpty())
+            {
+                return true;
+            }
+        }
+
+        const TSharedPtr<FJsonValue>* ContentValue = StreamObject->Values.Find(TEXT("content"));
+        if (ContentValue != nullptr && TryExtractFlexibleTextFromValue(*ContentValue, OutDelta, TryExtractFlexibleTextFromValue) && !OutDelta.IsEmpty())
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    bool TryExtractReasoningContentDelta(const TSharedPtr<FJsonObject>& StreamObject, FString& OutDelta)
+    {
+        OutDelta.Empty();
+        if (!StreamObject.IsValid())
+        {
+            return false;
+        }
+
+        FString EventType;
+        StreamObject->TryGetStringField(TEXT("type"), EventType);
+        if (EventType.Contains(TEXT("reasoning_content.delta")))
+        {
+            return StreamObject->TryGetStringField(TEXT("delta"), OutDelta) && !OutDelta.IsEmpty();
+        }
+
+        const TSharedPtr<FJsonObject>* DeltaObject = nullptr;
+        if (!StreamObject->TryGetObjectField(TEXT("delta"), DeltaObject) || DeltaObject == nullptr || !(*DeltaObject).IsValid())
+        {
+            return false;
+        }
+
+        if ((*DeltaObject)->TryGetStringField(TEXT("reasoning_content"), OutDelta) && !OutDelta.IsEmpty())
+        {
+            return true;
+        }
+
+        const TSharedPtr<FJsonValue>* ReasoningValue = (*DeltaObject)->Values.Find(TEXT("reasoning_content"));
+        if (ReasoningValue == nullptr || !ReasoningValue->IsValid())
+        {
+            return false;
+        }
+
+        if ((*ReasoningValue)->Type == EJson::String)
+        {
+            OutDelta = (*ReasoningValue)->AsString();
+            return !OutDelta.IsEmpty();
+        }
+
+        if ((*ReasoningValue)->Type == EJson::Array)
+        {
+            OutDelta = ExtractTextFromContentParts((*ReasoningValue)->AsArray());
+            return !OutDelta.IsEmpty();
+        }
+
+        if ((*ReasoningValue)->Type == EJson::Object)
+        {
+            const TSharedPtr<FJsonObject> ReasoningObject = (*ReasoningValue)->AsObject();
+            if (ReasoningObject.IsValid())
+            {
+                if (ReasoningObject->TryGetStringField(TEXT("text"), OutDelta) && !OutDelta.IsEmpty())
+                {
+                    return true;
+                }
+
+                const TArray<TSharedPtr<FJsonValue>>* ContentArray = nullptr;
+                if (ReasoningObject->TryGetArrayField(TEXT("content"), ContentArray) && ContentArray != nullptr)
+                {
+                    OutDelta = ExtractTextFromContentParts(*ContentArray);
+                    return !OutDelta.IsEmpty();
+                }
+            }
+        }
+
+        return false;
     }
 
     FString GetImageMimeType(const FString& ImagePath)
@@ -584,6 +962,44 @@ void FAIGatewayChatController::SubmitPrompt()
     }
 }
 
+void FAIGatewayChatController::CancelCurrentWork()
+{
+    FAIGatewayChatSession* Session = GetActiveSession();
+    if (Session == nullptr || !CanCancelWork())
+    {
+        return;
+    }
+
+    if (bIsSending)
+    {
+        ChatService->CancelActiveRequests();
+    }
+
+    ActiveRequestSerial = 0;
+    bIsSending = false;
+    Session->bAwaitingToolConfirmation = false;
+    Session->PendingToolCalls.Reset();
+    Session->PendingToolCallIndex = INDEX_NONE;
+    Session->StreamingToolCalls.Reset();
+    Session->CurrentToolRound = 0;
+    Session->PendingResponseBuffer.Empty();
+    Session->PendingUserPrompt.Empty();
+
+    if (Session->bAssistantMessageOpen && !Session->StreamedResponseCache.IsEmpty())
+    {
+        FinalizeAssistantResponse();
+    }
+    else
+    {
+        AbortAssistantResponse();
+    }
+
+    StatusMessage = TEXT("Canceled the current agent run.");
+    AppendMessage(TEXT("System"), TEXT("Canceled the current agent run."));
+    PersistActiveSession();
+    BroadcastStateChanged();
+}
+
 void FAIGatewayChatController::CreateSession()
 {
     if (!CanEditSessions())
@@ -661,6 +1077,7 @@ FAIGatewayChatPanelViewState FAIGatewayChatController::GetViewState() const
     ViewState.StatusMessage = StatusMessage;
     ViewState.SendButtonText = GetSendButtonText();
     ViewState.bCanSend = CanSendRequest();
+    ViewState.bCanCancel = CanCancelWork();
     ViewState.bCanEditSessions = CanEditSessions();
     ViewState.bIsSending = bIsSending;
     ViewState.bIsGeneratingTitle = IsGeneratingTitle();
@@ -714,6 +1131,20 @@ bool FAIGatewayChatController::ShouldDisplayConversationMessage(const FAIGateway
 bool FAIGatewayChatController::CanSendRequest() const
 {
     return GetActiveSession() != nullptr && !bIsSending && !IsAwaitingToolConfirmation() && !IsGeneratingTitle();
+}
+
+bool FAIGatewayChatController::CanCancelWork() const
+{
+    const FAIGatewayChatSession* Session = GetActiveSession();
+    if (Session == nullptr || IsGeneratingTitle())
+    {
+        return false;
+    }
+
+    return bIsSending ||
+        Session->bAwaitingToolConfirmation ||
+        Session->PendingToolCalls.Num() > 0 ||
+        Session->bAssistantMessageOpen;
 }
 
 bool FAIGatewayChatController::CanEditSessions() const
@@ -1052,6 +1483,7 @@ void FAIGatewayChatController::StartAssistantResponse()
     {
         Session->bAssistantMessageOpen = true;
         Session->StreamedResponseCache.Empty();
+        Session->StreamedReasoningCache.Empty();
         Session->PendingResponseBuffer.Empty();
         Session->StreamingToolCalls.Reset();
         AppendMessage(TEXT("AI"), TEXT(""));
@@ -1083,6 +1515,7 @@ void FAIGatewayChatController::AbortAssistantResponse()
 
         Session->bAssistantMessageOpen = false;
         Session->StreamedResponseCache.Empty();
+        Session->StreamedReasoningCache.Empty();
         Session->PendingResponseBuffer.Empty();
 
         if (Session->ConversationMessages.Num() > 0 &&
@@ -1101,6 +1534,7 @@ void FAIGatewayChatController::ResetStreamingState()
     {
         Session->PendingResponseBuffer.Empty();
         Session->StreamedResponseCache.Empty();
+        Session->StreamedReasoningCache.Empty();
         Session->StreamingToolCalls.Reset();
     }
 }
@@ -1143,9 +1577,12 @@ bool FAIGatewayChatController::SendChatRequest()
     Request.bStream = true;
     Request.Messages = BuildRequestMessages();
     Request.Tools = BuildToolDefinitions();
+    Request.ToolChoice = Request.Tools.Num() > 0 ? TEXT("auto") : FString();
 
     ResetStreamingState();
     bIsSending = true;
+    const int32 RequestSerial = ++NextRequestSerial;
+    ActiveRequestSerial = RequestSerial;
     StartAssistantResponse();
     StatusMessage = Session->CurrentToolRound == 0
         ? TEXT("Sending request with native UE tools enabled...")
@@ -1156,21 +1593,22 @@ bool FAIGatewayChatController::SendChatRequest()
     if (!ChatService->SendStreamingChatRequest(
             Settings,
             Request,
-            [WeakController](const FString& ChunkText)
+            [WeakController, RequestSerial](const FString& ChunkText)
             {
                 if (const TSharedPtr<FAIGatewayChatController> Pinned = WeakController.Pin())
                 {
-                    Pinned->HandleStreamingPayloadChunk(ChunkText);
+                    Pinned->HandleStreamingPayloadChunk(RequestSerial, ChunkText);
                 }
             },
-            [WeakController](const FAIGatewayChatServiceResponse& Response)
+            [WeakController, RequestSerial](const FAIGatewayChatServiceResponse& Response)
             {
                 if (const TSharedPtr<FAIGatewayChatController> Pinned = WeakController.Pin())
                 {
-                    Pinned->HandleChatResponse(Response);
+                    Pinned->HandleChatResponse(RequestSerial, Response);
                 }
             }))
     {
+        ActiveRequestSerial = 0;
         bIsSending = false;
         AbortAssistantResponse();
         BroadcastStateChanged();
@@ -1302,8 +1740,14 @@ void FAIGatewayChatController::FinishTurnWithError(const FString& ErrorMessage, 
     BroadcastStateChanged();
 }
 
-void FAIGatewayChatController::HandleChatResponse(const FAIGatewayChatServiceResponse& Response)
+void FAIGatewayChatController::HandleChatResponse(int32 RequestSerial, const FAIGatewayChatServiceResponse& Response)
 {
+    if (RequestSerial != ActiveRequestSerial)
+    {
+        return;
+    }
+
+    ActiveRequestSerial = 0;
     bIsSending = false;
 
     FAIGatewayChatSession* Session = GetActiveSession();
@@ -1332,9 +1776,10 @@ void FAIGatewayChatController::HandleChatResponse(const FAIGatewayChatServiceRes
     }
 
     FString ParsedAssistantContent;
+    FString ParsedReasoningContent;
     TArray<FAIGatewayPendingToolCall> ParsedToolCalls;
     bool bHadChoices = false;
-    ParseChatCompletionPayload(Response.ResponseBody, ParsedAssistantContent, ParsedToolCalls, bHadChoices);
+    ParseChatCompletionPayload(Response.ResponseBody, ParsedAssistantContent, ParsedReasoningContent, ParsedToolCalls, bHadChoices);
 
     if (ParsedAssistantContent.IsEmpty())
     {
@@ -1345,6 +1790,15 @@ void FAIGatewayChatController::HandleChatResponse(const FAIGatewayChatServiceRes
         Session->StreamedResponseCache = ParsedAssistantContent;
     }
 
+    if (ParsedReasoningContent.IsEmpty())
+    {
+        ParsedReasoningContent = Session->StreamedReasoningCache;
+    }
+    else
+    {
+        Session->StreamedReasoningCache = ParsedReasoningContent;
+    }
+
     if (ParsedToolCalls.Num() == 0 && Session->StreamingToolCalls.Num() > 0)
     {
         for (const FAIGatewayStreamingToolCall& StreamingToolCall : Session->StreamingToolCalls)
@@ -1352,8 +1806,8 @@ void FAIGatewayChatController::HandleChatResponse(const FAIGatewayChatServiceRes
             FAIGatewayPendingToolCall ToolCall;
             ToolCall.Id = StreamingToolCall.Id;
             ToolCall.Name = StreamingToolCall.Name;
-            ToolCall.ArgumentsJson = StreamingToolCall.ArgumentsJson;
-            ToolCall.Arguments = ParseJsonObject(StreamingToolCall.ArgumentsJson);
+            ToolCall.ArgumentsJson = NormalizeToolArgumentsJson(StreamingToolCall.ArgumentsJson);
+            ToolCall.Arguments = ParseJsonObject(ToolCall.ArgumentsJson);
             ParsedToolCalls.Add(ToolCall);
         }
     }
@@ -1369,7 +1823,7 @@ void FAIGatewayChatController::HandleChatResponse(const FAIGatewayChatServiceRes
             AbortAssistantResponse();
         }
 
-        AddRequestMessage(BuildAssistantMessageObject(ParsedAssistantContent, ParsedToolCalls));
+        AddRequestMessage(BuildAssistantMessageObject(ParsedAssistantContent, ParsedReasoningContent, ParsedToolCalls));
         AppendToolCallMessages(ParsedToolCalls);
         Session->PendingToolCalls = ParsedToolCalls;
         Session->PendingToolCallIndex = 0;
@@ -1382,7 +1836,7 @@ void FAIGatewayChatController::HandleChatResponse(const FAIGatewayChatServiceRes
     if (!ParsedAssistantContent.IsEmpty())
     {
         FinalizeAssistantResponse();
-        AddRequestMessage(BuildAssistantMessageObject(ParsedAssistantContent, {}));
+        AddRequestMessage(BuildAssistantMessageObject(ParsedAssistantContent, ParsedReasoningContent, {}));
         PersistActiveSession();
         MaybeGenerateTitleForActiveSession();
 
@@ -1400,8 +1854,13 @@ void FAIGatewayChatController::HandleChatResponse(const FAIGatewayChatServiceRes
             : TEXT("The response did not contain a usable assistant message or tool call payload."));
 }
 
-void FAIGatewayChatController::HandleStreamingPayloadChunk(const FString& ChunkText)
+void FAIGatewayChatController::HandleStreamingPayloadChunk(int32 RequestSerial, const FString& ChunkText)
 {
+    if (RequestSerial != ActiveRequestSerial)
+    {
+        return;
+    }
+
     FAIGatewayChatSession* Session = GetActiveSession();
     if (Session == nullptr)
     {
@@ -1443,6 +1902,28 @@ bool FAIGatewayChatController::HandleStreamingLine(const FString& LineText)
         return false;
     }
 
+    FString ReasoningContentDelta;
+    if (TryExtractReasoningContentDelta(ResponseObject, ReasoningContentDelta))
+    {
+        if (FAIGatewayChatSession* Session = GetActiveSession())
+        {
+            Session->StreamedReasoningCache.Append(ReasoningContentDelta);
+        }
+    }
+
+    FString OutputTextDelta;
+    if (TryExtractOutputTextDelta(ResponseObject, OutputTextDelta))
+    {
+        if (FAIGatewayChatSession* Session = GetActiveSession())
+        {
+            Session->StreamedResponseCache.Append(OutputTextDelta);
+            UpsertLastMessage(TEXT("AI"), Session->StreamedResponseCache);
+            StatusMessage = TEXT("Receiving streamed response...");
+            BroadcastStateChanged();
+        }
+        return true;
+    }
+
     const TArray<TSharedPtr<FJsonValue>>* Choices = nullptr;
     if (!ResponseObject->TryGetArrayField(TEXT("choices"), Choices) || Choices->Num() == 0)
     {
@@ -1474,8 +1955,51 @@ bool FAIGatewayChatController::TryAppendAssistantDelta(const TSharedPtr<FJsonObj
         return false;
     }
 
+    FString ReasoningDelta;
+    if ((*DeltaObject)->TryGetStringField(TEXT("reasoning_content"), ReasoningDelta) && !ReasoningDelta.IsEmpty())
+    {
+        Session->StreamedReasoningCache.Append(ReasoningDelta);
+    }
+
     FString DeltaContent;
-    if (!(*DeltaObject)->TryGetStringField(TEXT("content"), DeltaContent) || DeltaContent.IsEmpty())
+    const TSharedPtr<FJsonValue>* ContentValue = (*DeltaObject)->Values.Find(TEXT("content"));
+    if (ContentValue != nullptr)
+    {
+        if (ContentValue->IsValid())
+        {
+            if ((*ContentValue)->Type == EJson::String)
+            {
+                DeltaContent = (*ContentValue)->AsString();
+            }
+            else if ((*ContentValue)->Type == EJson::Array)
+            {
+                DeltaContent = ExtractTextFromContentParts((*ContentValue)->AsArray());
+            }
+            else if ((*ContentValue)->Type == EJson::Object)
+            {
+                const TSharedPtr<FJsonObject> ContentObject = (*ContentValue)->AsObject();
+                if (ContentObject.IsValid())
+                {
+                    ContentObject->TryGetStringField(TEXT("text"), DeltaContent);
+                    if (DeltaContent.IsEmpty())
+                    {
+                        const TArray<TSharedPtr<FJsonValue>>* ContentParts = nullptr;
+                        if (ContentObject->TryGetArrayField(TEXT("content"), ContentParts) && ContentParts != nullptr)
+                        {
+                            DeltaContent = ExtractTextFromContentParts(*ContentParts);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (DeltaContent.IsEmpty() && !(*DeltaObject)->TryGetStringField(TEXT("content"), DeltaContent))
+    {
+        (*DeltaObject)->TryGetStringField(TEXT("text"), DeltaContent);
+    }
+
+    if (DeltaContent.IsEmpty())
     {
         return false;
     }
@@ -1558,10 +2082,12 @@ bool FAIGatewayChatController::TryAppendToolCallDelta(const TSharedPtr<FJsonObje
 bool FAIGatewayChatController::ParseChatCompletionPayload(
     const FString& ResponseBody,
     FString& OutAssistantContent,
+    FString& OutReasoningContent,
     TArray<FAIGatewayPendingToolCall>& OutToolCalls,
     bool& bOutHadChoices) const
 {
     OutAssistantContent.Empty();
+    OutReasoningContent.Empty();
     OutToolCalls.Reset();
     bOutHadChoices = false;
 
@@ -1572,10 +2098,12 @@ bool FAIGatewayChatController::ParseChatCompletionPayload(
         return false;
     }
 
+    OutAssistantContent = ExtractAssistantContentFromResponseObject(ResponseObject);
+
     const TArray<TSharedPtr<FJsonValue>>* Choices = nullptr;
     if (!ResponseObject->TryGetArrayField(TEXT("choices"), Choices) || Choices->Num() == 0)
     {
-        return false;
+        return !OutAssistantContent.IsEmpty();
     }
 
     bOutHadChoices = true;
@@ -1592,7 +2120,12 @@ bool FAIGatewayChatController::ParseChatCompletionPayload(
         return false;
     }
 
-    OutAssistantContent = ExtractAssistantContentFromMessage(*MessageObject);
+    const FString MessageAssistantContent = ExtractAssistantContentFromMessage(*MessageObject);
+    OutReasoningContent = ExtractReasoningContentFromMessage(*MessageObject);
+    if (!MessageAssistantContent.IsEmpty())
+    {
+        OutAssistantContent = MessageAssistantContent;
+    }
     if (OutAssistantContent.IsEmpty())
     {
         // Compatibility fallback for some OpenAI-like gateways that still return
@@ -1627,7 +2160,7 @@ bool FAIGatewayChatController::TryParseToolCallsFromMessage(const TSharedPtr<FJs
         if ((*ToolCallObject)->TryGetObjectField(TEXT("function"), FunctionObject) && FunctionObject != nullptr && (*FunctionObject).IsValid())
         {
             (*FunctionObject)->TryGetStringField(TEXT("name"), ParsedToolCall.Name);
-            (*FunctionObject)->TryGetStringField(TEXT("arguments"), ParsedToolCall.ArgumentsJson);
+            TryReadFunctionArgumentsJson(*FunctionObject, ParsedToolCall.ArgumentsJson);
         }
 
         ParsedToolCall.Arguments = ParseJsonObject(ParsedToolCall.ArgumentsJson);
@@ -1679,11 +2212,21 @@ TSharedPtr<FJsonObject> FAIGatewayChatController::BuildUserMessageObject(const F
     return MessageObject;
 }
 
-TSharedPtr<FJsonObject> FAIGatewayChatController::BuildAssistantMessageObject(const FString& AssistantContent, const TArray<FAIGatewayPendingToolCall>& ToolCalls) const
+TSharedPtr<FJsonObject> FAIGatewayChatController::BuildAssistantMessageObject(const FString& AssistantContent, const FString& ReasoningContent, const TArray<FAIGatewayPendingToolCall>& ToolCalls) const
 {
     TSharedPtr<FJsonObject> MessageObject = MakeShared<FJsonObject>();
     MessageObject->SetStringField(TEXT("role"), TEXT("assistant"));
     MessageObject->SetStringField(TEXT("content"), AssistantContent);
+
+    if (!ReasoningContent.IsEmpty())
+    {
+        const FAIGatewayChatSession* Session = GetActiveSession();
+        const bool bShouldPreserveReasoning = ToolCalls.Num() > 0 || (Session != nullptr && Session->CurrentToolRound > 0);
+        if (bShouldPreserveReasoning)
+        {
+            MessageObject->SetStringField(TEXT("reasoning_content"), ReasoningContent);
+        }
+    }
 
     if (ToolCalls.Num() > 0)
     {
@@ -1692,7 +2235,7 @@ TSharedPtr<FJsonObject> FAIGatewayChatController::BuildAssistantMessageObject(co
         {
             TSharedPtr<FJsonObject> FunctionObject = MakeShared<FJsonObject>();
             FunctionObject->SetStringField(TEXT("name"), ToolCall.Name);
-            FunctionObject->SetStringField(TEXT("arguments"), ToolCall.ArgumentsJson);
+            FunctionObject->SetStringField(TEXT("arguments"), NormalizeToolArgumentsJson(ToolCall.ArgumentsJson));
 
             TSharedPtr<FJsonObject> ToolCallObject = MakeShared<FJsonObject>();
             ToolCallObject->SetStringField(TEXT("id"), ToolCall.Id);
@@ -1719,13 +2262,19 @@ TSharedPtr<FJsonObject> FAIGatewayChatController::BuildToolResultMessageObject(c
 TArray<TSharedPtr<FJsonValue>> FAIGatewayChatController::BuildRequestMessages() const
 {
     TArray<TSharedPtr<FJsonValue>> Messages;
+    Messages.Add(MakeShared<FJsonValueObject>(BuildAgentSystemMessageObject()));
+
     if (const FAIGatewayChatSession* Session = GetActiveSession())
     {
         for (const TSharedPtr<FJsonObject>& Message : Session->RequestMessages)
         {
             if (Message.IsValid())
             {
-                Messages.Add(MakeShared<FJsonValueObject>(Message));
+                TSharedPtr<FJsonObject> SanitizedMessage = SanitizeRequestMessageObject(Message);
+                if (SanitizedMessage.IsValid())
+                {
+                    Messages.Add(MakeShared<FJsonValueObject>(SanitizedMessage));
+                }
             }
         }
     }
@@ -1840,6 +2389,11 @@ FString FAIGatewayChatController::GetPendingToolApprovalPrompt() const
 
 FString FAIGatewayChatController::GetSendButtonText() const
 {
+    if (CanCancelWork())
+    {
+        return TEXT("Cancel");
+    }
+
     if (IsAwaitingToolConfirmation())
     {
         return TEXT("Waiting for Approval");

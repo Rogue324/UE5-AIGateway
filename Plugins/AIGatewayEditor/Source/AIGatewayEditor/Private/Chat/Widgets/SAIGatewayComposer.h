@@ -6,6 +6,7 @@
 
 DECLARE_DELEGATE_OneParam(FOnAIGatewayDraftChanged, const FString&);
 DECLARE_DELEGATE(FOnAIGatewaySendRequested);
+DECLARE_DELEGATE(FOnAIGatewayCancelRequested);
 DECLARE_DELEGATE(FOnAIGatewayImageAttachRequested);
 DECLARE_DELEGATE(FOnAIGatewayImageClearRequested);
 DECLARE_DELEGATE_OneParam(FOnAIGatewayImageRemoveRequested, int32);
@@ -16,6 +17,7 @@ public:
     SLATE_BEGIN_ARGS(SAIGatewayComposer) {}
         SLATE_EVENT(FOnAIGatewayDraftChanged, OnDraftChanged)
         SLATE_EVENT(FOnAIGatewaySendRequested, OnSendRequested)
+        SLATE_EVENT(FOnAIGatewayCancelRequested, OnCancelRequested)
         SLATE_EVENT(FOnAIGatewayImageAttachRequested, OnImageAttachRequested)
         SLATE_EVENT(FOnAIGatewayImageClearRequested, OnImageClearRequested)
         SLATE_EVENT(FOnAIGatewayImageRemoveRequested, OnImageRemoveRequested)
@@ -33,6 +35,7 @@ private:
 
     FOnAIGatewayDraftChanged OnDraftChanged;
     FOnAIGatewaySendRequested OnSendRequested;
+    FOnAIGatewayCancelRequested OnCancelRequested;
     FOnAIGatewayImageAttachRequested OnImageAttachRequested;
     FOnAIGatewayImageClearRequested OnImageClearRequested;
     FOnAIGatewayImageRemoveRequested OnImageRemoveRequested;
@@ -48,5 +51,6 @@ private:
     FString SendButtonText;
     float CachedAttachmentLayoutWidth = 0.0f;
     bool bCanSend = false;
+    bool bCanCancel = false;
     bool bSyncingText = false;
 };

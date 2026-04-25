@@ -1,4 +1,4 @@
-# AI Editor Assistant for Unreal Engine 5
+# <img src="Plugins/AIEditorAssistant/Resources/Icon40.png" alt="AI Editor Assistant Icon" width="22" /> AI Editor Assistant for Unreal Engine 5
 
 [English README](README.md)
 

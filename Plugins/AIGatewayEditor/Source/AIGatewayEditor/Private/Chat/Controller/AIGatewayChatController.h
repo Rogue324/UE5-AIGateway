@@ -90,12 +90,13 @@ private:
         FString& OutAssistantContent,
         FString& OutReasoningContent,
         TArray<FAIGatewayPendingToolCall>& OutToolCalls,
+        TSharedPtr<FJsonObject>& OutProviderPayload,
         bool& bOutHadChoices) const;
     bool TryParseToolCallsFromMessage(const TSharedPtr<FJsonObject>& MessageObject, TArray<FAIGatewayPendingToolCall>& OutToolCalls) const;
 
     TSharedPtr<FJsonObject> BuildUserMessageObject(const FString& UserPrompt, const TArray<FString>& ImagePaths, FString& OutError) const;
-    TSharedPtr<FJsonObject> BuildAssistantMessageObject(const FString& AssistantContent, const FString& ReasoningContent, const TArray<FAIGatewayPendingToolCall>& ToolCalls) const;
-    TSharedPtr<FJsonObject> BuildToolResultMessageObject(const FString& ToolCallId, const FString& Content) const;
+    TSharedPtr<FJsonObject> BuildAssistantMessageObject(const FString& AssistantContent, const FString& ReasoningContent, const TArray<FAIGatewayPendingToolCall>& ToolCalls, const TSharedPtr<FJsonObject>& ProviderPayload) const;
+    TSharedPtr<FJsonObject> BuildToolResultMessageObject(const FString& ToolCallId, const FString& ToolName, const FString& Content) const;
     TArray<TSharedPtr<FJsonValue>> BuildRequestMessages() const;
     TArray<TSharedPtr<FJsonValue>> BuildToolDefinitions() const;
 

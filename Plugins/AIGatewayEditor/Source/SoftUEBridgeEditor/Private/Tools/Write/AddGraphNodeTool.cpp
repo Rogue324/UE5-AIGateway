@@ -384,6 +384,25 @@ FBridgeToolResult UAddGraphNodeTool::Execute(
 		return FBridgeToolResult::Error(LoadError);
 	}
 
+	UBlueprint* BlueprintObject = Cast<UBlueprint>(Object);
+	if (BlueprintObject && BlueprintObject->BlueprintType == BPTYPE_Interface)
+	{
+		const bool bIsAnimLayerFunction = NodeClass == TEXT("AnimLayerFunction");
+		const bool bLooksLikeAnimGraphNode =
+			NodeClass.StartsWith(TEXT("AnimGraphNode_")) ||
+			NodeClass.Contains(TEXT("AnimGraphNode")) ||
+			NodeClass.Contains(TEXT("LinkedAnimLayer")) ||
+			NodeClass.Contains(TEXT("LinkedInputPose"));
+
+		if (!bIsAnimLayerFunction && bLooksLikeAnimGraphNode)
+		{
+			return FBridgeToolResult::Error(
+				TEXT("Anim graph nodes cannot be added directly to Blueprint Interface assets. ")
+				TEXT("For anim layer interfaces, use node_class='AnimLayerFunction' to create the layer graph first. ")
+				TEXT("Do not add UAnimGraphNode_* nodes directly to BPI assets."));
+		}
+	}
+
 	// Begin transaction
 	TSharedPtr<FScopedTransaction> Transaction = FBridgeAssetModifier::BeginTransaction(
 		FText::Format(NSLOCTEXT("MCP", "AddNode", "Add {0} node to {1}"),

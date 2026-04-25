@@ -33,6 +33,39 @@ void SAIGatewayConversationView::Construct(const FArguments& InArgs)
     ];
 }
 
+bool SAIGatewayConversationView::ShouldRenderMarkdownForMessage(const FAIGatewayChatPanelViewState& ViewState, int32 MessageIndex, const FAIGatewayChatMessage& Message) const
+{
+    (void)ViewState;
+    (void)MessageIndex;
+    (void)Message;
+    return true;
+}
+
+void SAIGatewayConversationView::RebuildMessageList(const TArray<FAIGatewayChatMessage>& InMessages)
+{
+    if (!ChatHistoryScrollBox.IsValid())
+    {
+        return;
+    }
+
+    ChatHistoryScrollBox->ClearChildren();
+    MessageCards.Reset();
+    CachedMessages = InMessages;
+
+    for (const FAIGatewayChatMessage& Message : InMessages)
+    {
+        TSharedPtr<SAIGatewayChatMessageCard> MessageCard;
+        ChatHistoryScrollBox->AddSlot()
+        .Padding(0.0f, 0.0f, 0.0f, 10.0f)
+        [
+            SAssignNew(MessageCard, SAIGatewayChatMessageCard)
+            .Message(Message)
+            .RenderMarkdown(true)
+        ];
+        MessageCards.Add(MessageCard);
+    }
+}
+
 void SAIGatewayConversationView::Refresh(const FAIGatewayChatPanelViewState& ViewState)
 {
     if (!ChatHistoryScrollBox.IsValid())
@@ -46,12 +79,13 @@ void SAIGatewayConversationView::Refresh(const FAIGatewayChatPanelViewState& Vie
         return;
     }
 
-    ChatHistoryScrollBox->ClearChildren();
     bCachedEmptyState = bIsEmpty;
 
     if (bIsEmpty)
     {
+        ChatHistoryScrollBox->ClearChildren();
         CachedMessages.Reset();
+        MessageCards.Reset();
         ChatHistoryScrollBox->AddSlot()
         .Padding(0.0f)
         [
@@ -63,17 +97,52 @@ void SAIGatewayConversationView::Refresh(const FAIGatewayChatPanelViewState& Vie
         return;
     }
 
-    CachedMessages = ViewState.VisibleMessages;
+    const bool bShouldRebuild = CachedMessages.Num() != ViewState.VisibleMessages.Num()
+        || MessageCards.Num() != ViewState.VisibleMessages.Num();
 
-    for (const FAIGatewayChatMessage& Message : ViewState.VisibleMessages)
+    if (bShouldRebuild)
     {
-        ChatHistoryScrollBox->AddSlot()
-        .Padding(0.0f, 0.0f, 0.0f, 10.0f)
-        [
-            SNew(SAIGatewayChatMessageCard)
-            .Message(Message)
-        ];
+        ChatHistoryScrollBox->ClearChildren();
+        MessageCards.Reset();
+        CachedMessages = ViewState.VisibleMessages;
+
+        for (int32 Index = 0; Index < ViewState.VisibleMessages.Num(); ++Index)
+        {
+            const FAIGatewayChatMessage& Message = ViewState.VisibleMessages[Index];
+            TSharedPtr<SAIGatewayChatMessageCard> MessageCard;
+            ChatHistoryScrollBox->AddSlot()
+            .Padding(0.0f, 0.0f, 0.0f, 10.0f)
+            [
+                SAssignNew(MessageCard, SAIGatewayChatMessageCard)
+                .Message(Message)
+                .RenderMarkdown(ShouldRenderMarkdownForMessage(ViewState, Index, Message))
+            ];
+            MessageCards.Add(MessageCard);
+        }
+
+        ChatHistoryScrollBox->ScrollToEnd();
+        return;
     }
 
-    ChatHistoryScrollBox->ScrollToEnd();
+    bool bLastMessageChanged = false;
+    for (int32 Index = 0; Index < ViewState.VisibleMessages.Num(); ++Index)
+    {
+        const FAIGatewayChatMessage& IncomingMessage = ViewState.VisibleMessages[Index];
+        if (!CachedMessages[Index].Role.Equals(IncomingMessage.Role, ESearchCase::CaseSensitive)
+            || !CachedMessages[Index].Content.Equals(IncomingMessage.Content, ESearchCase::CaseSensitive))
+        {
+            if (MessageCards.IsValidIndex(Index) && MessageCards[Index].IsValid())
+            {
+                MessageCards[Index]->Refresh(IncomingMessage, ShouldRenderMarkdownForMessage(ViewState, Index, IncomingMessage));
+            }
+
+            CachedMessages[Index] = IncomingMessage;
+            bLastMessageChanged = (Index == ViewState.VisibleMessages.Num() - 1);
+        }
+    }
+
+    if (bLastMessageChanged)
+    {
+        ChatHistoryScrollBox->ScrollToEnd();
+    }
 }

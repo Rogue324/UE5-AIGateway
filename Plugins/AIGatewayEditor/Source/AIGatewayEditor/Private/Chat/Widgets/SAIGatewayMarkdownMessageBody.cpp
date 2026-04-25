@@ -6,6 +6,9 @@
 #include "Framework/Text/SlateHyperlinkRun.h"
 #include "Framework/Text/TextDecorators.h"
 #include "HAL/PlatformProcess.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SGridPanel.h"
+#include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/SMultiLineEditableText.h"
 
 namespace
@@ -194,6 +197,33 @@ namespace
         return Result;
     }
 
+    FString StripResidualLegacyTags(const FString& Source)
+    {
+        FString Output = Source;
+
+        static const TCHAR* LegacyTokens[] =
+        {
+            TEXT("<MarkdownHeading>"),
+            TEXT("</MarkdownHeading>"),
+            TEXT("<MarkdownBold>"),
+            TEXT("</MarkdownBold>"),
+            TEXT("<MarkdownItalic>"),
+            TEXT("</MarkdownItalic>"),
+            TEXT("<MarkdownInlineCode>"),
+            TEXT("</MarkdownInlineCode>"),
+            TEXT("<MarkdownCodeBlock>"),
+            TEXT("</MarkdownCodeBlock>"),
+            TEXT("</>"),
+        };
+
+        for (const TCHAR* Token : LegacyTokens)
+        {
+            Output.ReplaceInline(Token, TEXT(" "));
+        }
+
+        return Output;
+    }
+
     FString PreprocessMarkdown(const FString& InMarkdownText)
     {
         FString Output = FAIGatewayMarkdownParser::NormalizeLineEndings(InMarkdownText);
@@ -215,6 +245,7 @@ namespace
         Output = ReplaceLegacyTagRange(Output, TEXT("MarkdownBold"), TEXT("**"), TEXT("**"));
         Output = ReplaceLegacyTagRange(Output, TEXT("MarkdownItalic"), TEXT("*"), TEXT("*"));
         Output = ReplaceLegacyTagRange(Output, TEXT("MarkdownInlineCode"), TEXT("`"), TEXT("`"));
+        Output = StripResidualLegacyTags(Output);
 
         return Output;
     }
@@ -240,82 +271,6 @@ namespace
         return Output.IsEmpty() ? TEXT("<MarkdownCodeBlock> </>") : Output;
     }
 
-    FString RenderTableRichText(const TArray<TArray<FString>>& Rows)
-    {
-        if (Rows.Num() == 0)
-        {
-            return TEXT("");
-        }
-
-        int32 MaxColumns = 0;
-        for (const TArray<FString>& Row : Rows)
-        {
-            MaxColumns = FMath::Max(MaxColumns, Row.Num());
-        }
-
-        TArray<int32> ColumnWidths;
-        ColumnWidths.Init(0, MaxColumns);
-
-        auto GetCellText = [](const FString& CellText)
-        {
-            return FAIGatewayMarkdownRichTextRenderer::NormalizeForDisplay(
-                FAIGatewayMarkdownRichTextRenderer::RenderInlineMarkdown(CellText, false));
-        };
-
-        for (const TArray<FString>& Row : Rows)
-        {
-            for (int32 ColumnIndex = 0; ColumnIndex < MaxColumns; ++ColumnIndex)
-            {
-                const FString CellText = Row.IsValidIndex(ColumnIndex) ? GetCellText(Row[ColumnIndex]) : TEXT("");
-                ColumnWidths[ColumnIndex] = FMath::Max(ColumnWidths[ColumnIndex], CellText.Len());
-            }
-        }
-
-        TArray<FString> RenderedLines;
-
-        auto PadRight = [](const FString& Value, const int32 Width)
-        {
-            if (Value.Len() >= Width)
-            {
-                return Value;
-            }
-
-            return Value + FString::ChrN(Width - Value.Len(), TEXT(' '));
-        };
-
-        auto AppendRow = [&](const TArray<FString>& Row, const bool bIsHeader)
-        {
-            FString Line = TEXT("| ");
-            for (int32 ColumnIndex = 0; ColumnIndex < MaxColumns; ++ColumnIndex)
-            {
-                FString CellText = Row.IsValidIndex(ColumnIndex) ? GetCellText(Row[ColumnIndex]) : TEXT("");
-                CellText = PadRight(CellText, ColumnWidths[ColumnIndex]);
-                Line.Append(CellText);
-                Line.Append(ColumnIndex + 1 < MaxColumns ? TEXT(" | ") : TEXT(" |"));
-            }
-
-            RenderedLines.Add(Line);
-
-            if (bIsHeader)
-            {
-                FString Separator = TEXT("| ");
-                for (int32 ColumnIndex = 0; ColumnIndex < MaxColumns; ++ColumnIndex)
-                {
-                    Separator.Append(FString::ChrN(FMath::Max(3, ColumnWidths[ColumnIndex]), TEXT('-')));
-                    Separator.Append(ColumnIndex + 1 < MaxColumns ? TEXT(" | ") : TEXT(" |"));
-                }
-                RenderedLines.Add(Separator);
-            }
-        };
-
-        AppendRow(Rows[0], true);
-        for (int32 RowIndex = 1; RowIndex < Rows.Num(); ++RowIndex)
-        {
-            AppendRow(Rows[RowIndex], false);
-        }
-
-        return RenderCodeBlockRichText(FString::Join(RenderedLines, TEXT("\n")));
-    }
 }
 
 void SAIGatewayMarkdownMessageBody::Construct(const FArguments& InArgs)
@@ -326,26 +281,46 @@ void SAIGatewayMarkdownMessageBody::Construct(const FArguments& InArgs)
 
     ChildSlot
     [
-        SAssignNew(RichTextWidget, SMultiLineEditableText)
-        .Marshaller(Marshaller)
-        .Text(FText::GetEmpty())
-        .TextStyle(&FAIGatewayMarkdownRichTextRenderer::GetStyle().GetWidgetStyle<FTextBlockStyle>("MarkdownBody"))
-        .IsReadOnly(true)
-        .AllowContextMenu(true)
-        .AutoWrapText(true)
-        .Margin(FMargin(0.0f))
-        .ClearTextSelectionOnFocusLoss(false)
-        .SelectWordOnMouseDoubleClick(true)
+        SAssignNew(BodyContainer, SVerticalBox)
     ];
 
     RebuildContent(InArgs._MarkdownText);
 }
 
+void SAIGatewayMarkdownMessageBody::RefreshMarkdown(const FString& InMarkdownText)
+{
+    RebuildContent(InMarkdownText);
+}
+
 void SAIGatewayMarkdownMessageBody::RebuildContent(const FString& InMarkdownText)
 {
-    if (RichTextWidget.IsValid())
+    if (!BodyContainer.IsValid())
     {
-        RichTextWidget->SetText(FText::FromString(BuildRenderableRichText(InMarkdownText)));
+        return;
+    }
+
+    BodyContainer->ClearChildren();
+
+    const FString PreprocessedMarkdown = PreprocessMarkdown(InMarkdownText);
+    const TArray<FAIGatewayMarkdownBlock> Blocks = FAIGatewayMarkdownParser::ParseBlocks(PreprocessedMarkdown);
+    if (Blocks.Num() == 0)
+    {
+        BodyContainer->AddSlot()
+        .AutoHeight()
+        [
+            BuildRichTextBlockWidget(TEXT(" "), TEXT("MarkdownBody"), FMargin(0.0f))
+        ];
+        return;
+    }
+
+    for (int32 Index = 0; Index < Blocks.Num(); ++Index)
+    {
+        BodyContainer->AddSlot()
+        .AutoHeight()
+        .Padding(0.0f, 0.0f, 0.0f, Index + 1 < Blocks.Num() ? 10.0f : 0.0f)
+        [
+            BuildBlockWidget(Blocks[Index])
+        ];
     }
 }
 
@@ -375,7 +350,7 @@ FString SAIGatewayMarkdownMessageBody::BuildRenderableRichText(const FString& In
             break;
 
         case EAIGatewayMarkdownBlockType::Table:
-            Output.Append(RenderTableRichText(Block.TableRows));
+            Output.Append(TEXT("[table]"));
             break;
 
         case EAIGatewayMarkdownBlockType::Paragraph:
@@ -386,4 +361,72 @@ FString SAIGatewayMarkdownMessageBody::BuildRenderableRichText(const FString& In
     }
 
     return Output.IsEmpty() ? TEXT(" ") : Output;
+}
+
+TSharedRef<SWidget> SAIGatewayMarkdownMessageBody::BuildBlockWidget(const FAIGatewayMarkdownBlock& Block) const
+{
+    switch (Block.Type)
+    {
+    case EAIGatewayMarkdownBlockType::CodeBlock:
+        return BuildRichTextBlockWidget(RenderCodeBlockRichText(Block.Text), TEXT("MarkdownBody"), FMargin(0.0f));
+
+    case EAIGatewayMarkdownBlockType::Table:
+        return BuildTableWidget(Block.TableRows);
+
+    case EAIGatewayMarkdownBlockType::Paragraph:
+    default:
+        return BuildRichTextBlockWidget(
+            FAIGatewayMarkdownRichTextRenderer::RenderMarkdownToRichText(Block.Text, true),
+            TEXT("MarkdownBody"),
+            FMargin(0.0f));
+    }
+}
+
+TSharedRef<SWidget> SAIGatewayMarkdownMessageBody::BuildRichTextBlockWidget(const FString& RichText, const FName& TextStyleName, const FMargin& Margin) const
+{
+    return SNew(SMultiLineEditableText)
+        .Marshaller(RichTextMarshaller.ToSharedRef())
+        .Text(FText::FromString(RichText.IsEmpty() ? TEXT(" ") : RichText))
+        .TextStyle(&FAIGatewayMarkdownRichTextRenderer::GetStyle().GetWidgetStyle<FTextBlockStyle>(TextStyleName))
+        .IsReadOnly(true)
+        .AllowContextMenu(true)
+        .AutoWrapText(true)
+        .Margin(Margin)
+        .ClearTextSelectionOnFocusLoss(false)
+        .SelectWordOnMouseDoubleClick(true);
+}
+
+TSharedRef<SWidget> SAIGatewayMarkdownMessageBody::BuildTableWidget(const TArray<TArray<FString>>& Rows) const
+{
+    TSharedRef<SGridPanel> Grid = SNew(SGridPanel);
+
+    int32 MaxColumns = 0;
+    for (const TArray<FString>& Row : Rows)
+    {
+        MaxColumns = FMath::Max(MaxColumns, Row.Num());
+    }
+
+    for (int32 RowIndex = 0; RowIndex < Rows.Num(); ++RowIndex)
+    {
+        const bool bIsHeader = (RowIndex == 0);
+        for (int32 ColumnIndex = 0; ColumnIndex < MaxColumns; ++ColumnIndex)
+        {
+            const FString CellSource = Rows[RowIndex].IsValidIndex(ColumnIndex) ? Rows[RowIndex][ColumnIndex] : FString();
+            const FString CellRichText = FAIGatewayMarkdownRichTextRenderer::RenderInlineMarkdown(CellSource, true);
+            const FName BrushName = bIsHeader ? TEXT("TableHeaderBubble") : TEXT("TableCellBubble");
+
+            Grid->AddSlot(ColumnIndex, RowIndex)
+            .Padding(2.0f)
+            [
+                SNew(SBorder)
+                .BorderImage(FAIGatewayMarkdownRichTextRenderer::GetStyle().GetBrush(BrushName))
+                .Padding(FMargin(8.0f, 6.0f))
+                [
+                    BuildRichTextBlockWidget(CellRichText, TEXT("MarkdownBody"), FMargin(0.0f))
+                ]
+            ];
+        }
+    }
+
+    return Grid;
 }

@@ -14,8 +14,11 @@ public:
 
 private:
     bool AreMessagesUnchanged(const TArray<FAIGatewayChatMessage>& InMessages) const;
+    bool ShouldRenderMarkdownForMessage(const FAIGatewayChatPanelViewState& ViewState, int32 MessageIndex, const FAIGatewayChatMessage& Message) const;
+    void RebuildMessageList(const TArray<FAIGatewayChatMessage>& InMessages);
 
     TSharedPtr<class SScrollBox> ChatHistoryScrollBox;
     TArray<FAIGatewayChatMessage> CachedMessages;
+    TArray<TSharedPtr<class SAIGatewayChatMessageCard>> MessageCards;
     bool bCachedEmptyState = true;
 };

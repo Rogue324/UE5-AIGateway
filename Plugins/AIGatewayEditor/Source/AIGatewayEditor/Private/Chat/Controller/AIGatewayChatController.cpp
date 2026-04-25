@@ -31,7 +31,9 @@ namespace
             "Use only the provided native tools. If a task cannot be completed with the native tools, explain the limitation instead of proposing Python.\n"
             "For adding components to actors, use add-component. Do not write Python for component creation when add-component is available.\n"
             "The add-blueprint-variable tool is available in this environment. Never claim it is unavailable unless a tool call actually returned an error proving otherwise.\n"
+            "The add-interface-function tool is available in this environment for Blueprint Interface assets. Never claim it is unavailable unless a tool call actually returned an error proving otherwise.\n"
             "For creating Blueprint member variables, use add-blueprint-variable. Do not use Python for Blueprint variable creation.\n"
+            "For creating functions on Blueprint Interface assets (BPI_*), use add-interface-function. Do not pretend modify-interface or set-blueprint-default can create interface function definitions.\n"
             "Never use set-blueprint-default or set-asset-property to create Blueprint variable definitions. Those tools edit existing properties only; they do not create new Blueprint variables.\n"
             "Never attempt to create Blueprint variables implicitly by placing Set/Get nodes. Blueprint variables must be created explicitly with add-blueprint-variable before any variable_get or variable_set node is added.\n"
             "Prefer add-blueprint-k2-node over low-level add-graph-node for Blueprint function calls and Blueprint variable get/set nodes because it performs the correct binding and validation.\n"
@@ -1123,9 +1125,8 @@ void FAIGatewayChatController::BroadcastStateChanged()
 
 bool FAIGatewayChatController::ShouldDisplayConversationMessage(const FAIGatewayChatMessage& Message) const
 {
-    return ShouldShowToolActivityInChat() ||
-        (!Message.Role.Equals(TEXT("Tool"), ESearchCase::IgnoreCase) &&
-            !Message.Role.Equals(TEXT("Tool Result"), ESearchCase::IgnoreCase));
+    return !Message.Role.Equals(TEXT("Tool"), ESearchCase::IgnoreCase) &&
+        !Message.Role.Equals(TEXT("Tool Result"), ESearchCase::IgnoreCase);
 }
 
 bool FAIGatewayChatController::CanSendRequest() const
@@ -1226,6 +1227,8 @@ bool FAIGatewayChatController::ResolveServiceSettings(FAIGatewayChatServiceSetti
     OutSettings.BaseUrl.RemoveFromEnd(TEXT("/"));
     OutSettings.ApiKey = Settings->ApiKey.TrimStartAndEnd();
     OutSettings.Model = CurrentModel.TrimStartAndEnd();
+    OutSettings.Provider = Settings->Provider;
+    OutSettings.ReasoningIntensity = Settings->ReasoningIntensity;
 
     if (OutSettings.BaseUrl.IsEmpty())
     {
@@ -1656,7 +1659,7 @@ void FAIGatewayChatController::ExecuteNextPendingToolCall()
     if (Definition == nullptr)
     {
         const FAIGatewayToolResult Result = FAIGatewayToolResult::Error(FString::Printf(TEXT("Unknown tool '%s'."), *ToolCall.Name));
-        AddRequestMessage(BuildToolResultMessageObject(ToolCall.Id, Result.ToMessageContent()));
+        AddRequestMessage(BuildToolResultMessageObject(ToolCall.Id, ToolCall.Name, Result.ToMessageContent()));
         AppendToolResultMessage(ToolCall, Result);
         PersistActiveSession();
         ++Session->PendingToolCallIndex;
@@ -1689,7 +1692,7 @@ void FAIGatewayChatController::ExecuteCurrentPendingToolCall(bool bApproved)
         ? FAIGatewayToolRuntime::Get().ExecuteTool(ToolCall.Name, ToolCall.Arguments.IsValid() ? ToolCall.Arguments : MakeShared<FJsonObject>())
         : FAIGatewayToolResult::Rejected(TEXT("The user rejected this tool call."));
 
-    AddRequestMessage(BuildToolResultMessageObject(ToolCall.Id, Result.ToMessageContent()));
+    AddRequestMessage(BuildToolResultMessageObject(ToolCall.Id, ToolCall.Name, Result.ToMessageContent()));
     AppendToolResultMessage(ToolCall, Result);
     StatusMessage = Result.Summary;
     PersistActiveSession();
@@ -1778,8 +1781,9 @@ void FAIGatewayChatController::HandleChatResponse(int32 RequestSerial, const FAI
     FString ParsedAssistantContent;
     FString ParsedReasoningContent;
     TArray<FAIGatewayPendingToolCall> ParsedToolCalls;
+    TSharedPtr<FJsonObject> ParsedProviderPayload;
     bool bHadChoices = false;
-    ParseChatCompletionPayload(Response.ResponseBody, ParsedAssistantContent, ParsedReasoningContent, ParsedToolCalls, bHadChoices);
+    ParseChatCompletionPayload(Response.ResponseBody, ParsedAssistantContent, ParsedReasoningContent, ParsedToolCalls, ParsedProviderPayload, bHadChoices);
 
     if (ParsedAssistantContent.IsEmpty())
     {
@@ -1823,7 +1827,7 @@ void FAIGatewayChatController::HandleChatResponse(int32 RequestSerial, const FAI
             AbortAssistantResponse();
         }
 
-        AddRequestMessage(BuildAssistantMessageObject(ParsedAssistantContent, ParsedReasoningContent, ParsedToolCalls));
+        AddRequestMessage(BuildAssistantMessageObject(ParsedAssistantContent, ParsedReasoningContent, ParsedToolCalls, ParsedProviderPayload));
         AppendToolCallMessages(ParsedToolCalls);
         Session->PendingToolCalls = ParsedToolCalls;
         Session->PendingToolCallIndex = 0;
@@ -1836,7 +1840,7 @@ void FAIGatewayChatController::HandleChatResponse(int32 RequestSerial, const FAI
     if (!ParsedAssistantContent.IsEmpty())
     {
         FinalizeAssistantResponse();
-        AddRequestMessage(BuildAssistantMessageObject(ParsedAssistantContent, ParsedReasoningContent, {}));
+        AddRequestMessage(BuildAssistantMessageObject(ParsedAssistantContent, ParsedReasoningContent, {}, ParsedProviderPayload));
         PersistActiveSession();
         MaybeGenerateTitleForActiveSession();
 
@@ -2084,11 +2088,13 @@ bool FAIGatewayChatController::ParseChatCompletionPayload(
     FString& OutAssistantContent,
     FString& OutReasoningContent,
     TArray<FAIGatewayPendingToolCall>& OutToolCalls,
+    TSharedPtr<FJsonObject>& OutProviderPayload,
     bool& bOutHadChoices) const
 {
     OutAssistantContent.Empty();
     OutReasoningContent.Empty();
     OutToolCalls.Reset();
+    OutProviderPayload.Reset();
     bOutHadChoices = false;
 
     TSharedPtr<FJsonObject> ResponseObject;
@@ -2131,6 +2137,12 @@ bool FAIGatewayChatController::ParseChatCompletionPayload(
         // Compatibility fallback for some OpenAI-like gateways that still return
         // text on the top-level choice object instead of message.content.
         (*FirstChoiceObject)->TryGetStringField(TEXT("text"), OutAssistantContent);
+    }
+
+    const TSharedPtr<FJsonObject>* ProviderPayloadObject = nullptr;
+    if ((*MessageObject)->TryGetObjectField(TEXT("_aigateway_provider_payload"), ProviderPayloadObject) && ProviderPayloadObject != nullptr && (*ProviderPayloadObject).IsValid())
+    {
+        OutProviderPayload = ParseJsonObject(SerializeJsonObject(*ProviderPayloadObject));
     }
 
     TryParseToolCallsFromMessage(*MessageObject, OutToolCalls);
@@ -2212,7 +2224,7 @@ TSharedPtr<FJsonObject> FAIGatewayChatController::BuildUserMessageObject(const F
     return MessageObject;
 }
 
-TSharedPtr<FJsonObject> FAIGatewayChatController::BuildAssistantMessageObject(const FString& AssistantContent, const FString& ReasoningContent, const TArray<FAIGatewayPendingToolCall>& ToolCalls) const
+TSharedPtr<FJsonObject> FAIGatewayChatController::BuildAssistantMessageObject(const FString& AssistantContent, const FString& ReasoningContent, const TArray<FAIGatewayPendingToolCall>& ToolCalls, const TSharedPtr<FJsonObject>& ProviderPayload) const
 {
     TSharedPtr<FJsonObject> MessageObject = MakeShared<FJsonObject>();
     MessageObject->SetStringField(TEXT("role"), TEXT("assistant"));
@@ -2247,14 +2259,23 @@ TSharedPtr<FJsonObject> FAIGatewayChatController::BuildAssistantMessageObject(co
         MessageObject->SetArrayField(TEXT("tool_calls"), ToolCallArray);
     }
 
+    if (ProviderPayload.IsValid())
+    {
+        MessageObject->SetObjectField(TEXT("_aigateway_provider_payload"), ParseJsonObject(SerializeJsonObject(ProviderPayload)));
+    }
+
     return MessageObject;
 }
 
-TSharedPtr<FJsonObject> FAIGatewayChatController::BuildToolResultMessageObject(const FString& ToolCallId, const FString& Content) const
+TSharedPtr<FJsonObject> FAIGatewayChatController::BuildToolResultMessageObject(const FString& ToolCallId, const FString& ToolName, const FString& Content) const
 {
     TSharedPtr<FJsonObject> MessageObject = MakeShared<FJsonObject>();
     MessageObject->SetStringField(TEXT("role"), TEXT("tool"));
     MessageObject->SetStringField(TEXT("tool_call_id"), ToolCallId);
+    if (!ToolName.IsEmpty())
+    {
+        MessageObject->SetStringField(TEXT("name"), ToolName);
+    }
     MessageObject->SetStringField(TEXT("content"), Content);
     return MessageObject;
 }

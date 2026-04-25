@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AIGatewayEditorSettings.h"
 #include "CoreMinimal.h"
 #include "Dom/JsonObject.h"
 #include "Interfaces/IHttpRequest.h"
@@ -9,6 +10,8 @@ struct FAIGatewayChatServiceSettings
     FString BaseUrl;
     FString ApiKey;
     FString Model;
+    EAIGatewayAPIProvider Provider = EAIGatewayAPIProvider::OpenAICompatible;
+    EAIGatewayReasoningIntensity ReasoningIntensity = EAIGatewayReasoningIntensity::ProviderDefault;
 };
 
 struct FAIGatewayChatCompletionRequest

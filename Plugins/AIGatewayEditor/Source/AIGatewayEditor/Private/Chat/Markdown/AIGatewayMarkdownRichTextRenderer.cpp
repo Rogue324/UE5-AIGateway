@@ -26,6 +26,7 @@ namespace
         case 0x2093: return TEXT('x');
         case 0x2212: return TEXT('-');
         case 0x00A0: return TEXT(' ');
+        case 0xFFFD: return TEXT(' ');
         default: return Character;
         }
     }

@@ -25,7 +25,21 @@ namespace
 
     bool IsMarkdownTableLine(const FString& TrimmedLine)
     {
-        return TrimmedLine.StartsWith(TEXT("|")) && TrimmedLine.EndsWith(TEXT("|")) && TrimmedLine.Contains(TEXT("|"));
+        if (TrimmedLine.IsEmpty())
+        {
+            return false;
+        }
+
+        int32 PipeCount = 0;
+        for (int32 Index = 0; Index < TrimmedLine.Len(); ++Index)
+        {
+            if (TrimmedLine[Index] == TEXT('|'))
+            {
+                ++PipeCount;
+            }
+        }
+
+        return PipeCount >= 2;
     }
 
     bool IsMarkdownTableSeparatorLine(const FString& TrimmedLine)
@@ -51,7 +65,10 @@ namespace
     {
         FString WorkingLine = TrimmedLine;
         WorkingLine.RemoveFromStart(TEXT("|"));
-        WorkingLine.RemoveFromEnd(TEXT("|"));
+        while (WorkingLine.EndsWith(TEXT("|")))
+        {
+            WorkingLine.LeftChopInline(1, EAllowShrinking::No);
+        }
 
         TArray<FString> Cells;
         WorkingLine.ParseIntoArray(Cells, TEXT("|"), false);

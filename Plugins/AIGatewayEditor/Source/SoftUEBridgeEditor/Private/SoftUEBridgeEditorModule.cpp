@@ -81,6 +81,7 @@
 #include "Tools/Write/DisconnectGraphPinTool.h"
 #include "Tools/Write/SetNodePositionTool.h"
 #include "Tools/Write/CreateAssetTool.h"
+#include "Tools/Write/AddInterfaceFunctionTool.h"
 #include "Tools/Write/AddBlueprintVariableTool.h"
 #include "Tools/Write/ModifyInterfaceTool.h"
 #include "Tools/Write/SaveAssetTool.h"
@@ -178,6 +179,7 @@ void FSoftUEBridgeEditorModule::StartupModule()
 	Registry.RegisterToolClass<UDisconnectGraphPinTool>();
 	Registry.RegisterToolClass<USetNodePositionTool>();
 	Registry.RegisterToolClass<UCreateAssetTool>();
+	Registry.RegisterToolClass<UAddInterfaceFunctionTool>();
 	Registry.RegisterToolClass<UAddBlueprintVariableTool>();
 	Registry.RegisterToolClass<UModifyInterfaceTool>();
 	Registry.RegisterToolClass<USaveAssetTool>();

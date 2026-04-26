@@ -4,7 +4,7 @@ UAIEditorAssistantSettings::UAIEditorAssistantSettings()
 {
     BaseUrl = TEXT("https://api.openai.com/v1");
     ApiKey = TEXT("");
-    Provider = EAIEditorAssistantAPIProvider::OpenAICompatible;
+    Provider = EAIEditorAssistantAPIProvider::OpenAI;
     Model = TEXT("gpt-4o-mini");
     ReasoningIntensity = EAIEditorAssistantReasoningIntensity::Medium;
     MaxToolRounds = 500;

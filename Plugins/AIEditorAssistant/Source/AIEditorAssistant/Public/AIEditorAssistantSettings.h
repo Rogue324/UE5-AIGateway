@@ -7,10 +7,15 @@
 UENUM()
 enum class EAIEditorAssistantAPIProvider : uint8
 {
-    OpenAICompatible UMETA(DisplayName = "OpenAI Compatible"),
-    DeepSeek UMETA(DisplayName = "DeepSeek"),
-    Anthropic UMETA(DisplayName = "Anthropic Claude"),
-    Gemini UMETA(DisplayName = "Google Gemini"),
+    // Legacy values (preserved numeric values for migration compatibility).
+    OpenAICompatible = 0 UMETA(Hidden),
+    DeepSeek = 1 UMETA(DisplayName = "DeepSeek"),
+    Anthropic = 2 UMETA(Hidden),
+    Gemini = 3 UMETA(Hidden),
+
+    // New business-facing values.
+    OpenAI = 4 UMETA(DisplayName = "OpenAI"),
+    Custom = 5 UMETA(DisplayName = "Custom (Base URL + API Key)"),
 };
 
 UENUM()
@@ -36,19 +41,28 @@ public:
     virtual FName GetContainerName() const override;
     virtual FName GetCategoryName() const override;
 
-    UPROPERTY(Config, EditAnywhere, Category = "Connection", meta = (DisplayName = "Base URL"))
-    FString BaseUrl;
+    UPROPERTY(Config, EditAnywhere, Category = "Connection", meta = (DisplayName = "API Provider", ToolTip = "OpenAI and DeepSeek use built-in official endpoints and only require API Key. Use Custom for OpenAI-compatible gateways where you need to specify Base URL manually."))
+    EAIEditorAssistantAPIProvider Provider;
 
     UPROPERTY(Config, EditAnywhere, Category = "Connection", meta = (DisplayName = "API Key"))
     FString ApiKey;
 
-    UPROPERTY(Config, EditAnywhere, Category = "Connection", meta = (DisplayName = "API Provider", ToolTip = "Select the request format to use. OpenAI Compatible works for OpenAI-compatible providers such as OpenAI, Qwen-compatible servers, Moonshot, and many self-hosted services."))
-    EAIEditorAssistantAPIProvider Provider;
+    UPROPERTY(
+        Config,
+        EditAnywhere,
+        Category = "Connection",
+        meta = (
+            DisplayName = "Base URL",
+            EditCondition = "Provider == EAIEditorAssistantAPIProvider::Custom",
+            EditConditionHides))
+    FString BaseUrl;
 
-    UPROPERTY(Config, EditAnywhere, Category = "Request", meta = (DisplayName = "Model"))
+    // Managed from the chat panel, persisted in config.
+    UPROPERTY(Config)
     FString Model;
 
-    UPROPERTY(Config, EditAnywhere, Category = "Request", meta = (DisplayName = "Reasoning Intensity", ToolTip = "Recommended starting points: OpenAI/DeepSeek use Medium or High for coding agents, Anthropic Sonnet 4.6 is usually best at Medium, Claude Opus 4.7 often starts at High or Maximum, Gemini Flash starts at Medium and Gemini Pro starts at High."))
+    // Managed from the chat panel, persisted in config.
+    UPROPERTY(Config)
     EAIEditorAssistantReasoningIntensity ReasoningIntensity;
 
     UPROPERTY(Config, EditAnywhere, Category = "Chat", meta = (DisplayName = "Max Tool Rounds", ClampMin = "1", UIMin = "1"))

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Widgets/Input/SComboBox.h"
 #include "Widgets/SCompoundWidget.h"
 
 class SAIEditorAssistantChatPanel : public SCompoundWidget
@@ -15,9 +16,23 @@ public:
 
 private:
     void RefreshFromController();
+    void HandleModelSelectionChanged(TSharedPtr<FString> InSelectedItem, ESelectInfo::Type SelectInfo);
+    TSharedRef<SWidget> GenerateModelOptionWidget(TSharedPtr<FString> InItem) const;
+    FText GetSelectedModelText() const;
+    void HandleReasoningSelectionChanged(TSharedPtr<FString> InSelectedItem, ESelectInfo::Type SelectInfo);
+    TSharedRef<SWidget> GenerateReasoningOptionWidget(TSharedPtr<FString> InItem) const;
+    FText GetSelectedReasoningText() const;
 
     TSharedPtr<class FAIEditorAssistantChatController> ChatController;
-    TSharedPtr<class SEditableTextBox> ModelTextBox;
+    TArray<TSharedPtr<FString>> ModelOptions;
+    TSharedPtr<SComboBox<TSharedPtr<FString>>> ModelComboBox;
+    TSharedPtr<FString> SelectedModelOption;
+    TSharedPtr<class SEditableTextBox> ModelManualTextBox;
+    TSharedPtr<class STextBlock> ModelListStatusTextBlock;
+    TArray<TSharedPtr<FString>> ReasoningOptions;
+    TSharedPtr<SComboBox<TSharedPtr<FString>>> ReasoningComboBox;
+    TSharedPtr<FString> SelectedReasoningOption;
+    TSharedPtr<class STextBlock> ReasoningStatusTextBlock;
     TSharedPtr<class STextBlock> ContextTextBlock;
     TSharedPtr<class STextBlock> StatusTextBlock;
     TSharedPtr<class SAIEditorAssistantSessionTabBar> SessionTabBar;

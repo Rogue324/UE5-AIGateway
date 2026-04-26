@@ -15,6 +15,8 @@
 namespace
 {
     const FString DefaultSessionTitle(TEXT("New Chat"));
+    const FString OpenAIOfficialBaseUrl(TEXT("https://api.openai.com/v1"));
+    const FString DeepSeekOfficialBaseUrl(TEXT("https://api.deepseek.com"));
     constexpr int32 MaxInlineImageLongEdge = 1568;
     constexpr int32 MaxPreferredPngBytes = 1536 * 1024;
     constexpr int32 PhotoJpegQuality = 82;
@@ -959,6 +961,23 @@ namespace
 
         return FString::Printf(TEXT("%s\n%s"), *AttachmentLabel, *TrimmedPrompt);
     }
+
+    bool IsOpenAIOfficialUrl(const FString& InBaseUrl)
+    {
+        FString Normalized = InBaseUrl.TrimStartAndEnd();
+        while (Normalized.EndsWith(TEXT("/")))
+        {
+            Normalized.LeftChopInline(1, EAllowShrinking::No);
+        }
+
+        FString Official = OpenAIOfficialBaseUrl;
+        while (Official.EndsWith(TEXT("/")))
+        {
+            Official.LeftChopInline(1, EAllowShrinking::No);
+        }
+
+        return Normalized.Equals(Official, ESearchCase::IgnoreCase);
+    }
 }
 
 FAIEditorAssistantChatController::FAIEditorAssistantChatController(
@@ -972,8 +991,11 @@ FAIEditorAssistantChatController::FAIEditorAssistantChatController(
 void FAIEditorAssistantChatController::Initialize()
 {
     LoadModelFromSettings();
+    LoadReasoningFromSettings();
     LoadSessions();
-    StatusMessage = TEXT("Configure Base URL and API Key in Project Settings > Plugins > AI Editor Assistant.");
+    StatusMessage = TEXT("Select provider and configure API Key in Project Settings > Plugins > AI Editor Assistant. Base URL is only required for Custom provider.");
+    RefreshModelOptionsInternal(false);
+    RefreshReasoningOptionsInternal(false);
     BroadcastStateChanged();
 }
 
@@ -989,7 +1011,41 @@ void FAIEditorAssistantChatController::PersistActiveDraft()
 
 void FAIEditorAssistantChatController::SetModel(const FString& InModel)
 {
+    if (CurrentModel.Equals(InModel, ESearchCase::CaseSensitive))
+    {
+        return;
+    }
+
     CurrentModel = InModel;
+    RefreshReasoningOptionsInternal(false);
+    BroadcastStateChanged();
+}
+
+void FAIEditorAssistantChatController::RefreshModelOptions()
+{
+    RefreshModelOptionsInternal(true);
+}
+
+void FAIEditorAssistantChatController::SetReasoningMode(const FString& InReasoningMode)
+{
+    EAIEditorAssistantReasoningIntensity ParsedIntensity = EAIEditorAssistantReasoningIntensity::ProviderDefault;
+    if (!TryParseReasoningModeLabel(InReasoningMode, ParsedIntensity))
+    {
+        return;
+    }
+
+    if (CurrentReasoningIntensity == ParsedIntensity)
+    {
+        return;
+    }
+
+    CurrentReasoningIntensity = ParsedIntensity;
+    BroadcastStateChanged();
+}
+
+void FAIEditorAssistantChatController::RefreshReasoningOptions()
+{
+    RefreshReasoningOptionsInternal(true);
 }
 
 void FAIEditorAssistantChatController::UpdateDraft(const FString& DraftText)
@@ -1068,6 +1124,11 @@ void FAIEditorAssistantChatController::SubmitPrompt()
 
     FString SettingsError;
     if (!SaveModelToSettings(SettingsError))
+    {
+        FinishTurnWithError(SettingsError);
+        return;
+    }
+    if (!SaveReasoningToSettings(SettingsError))
     {
         FinishTurnWithError(SettingsError);
         return;
@@ -1225,6 +1286,14 @@ FAIEditorAssistantChatPanelViewState FAIEditorAssistantChatController::GetViewSt
 {
     FAIEditorAssistantChatPanelViewState ViewState;
     ViewState.Model = CurrentModel;
+    ViewState.ModelOptions = CachedModelOptions;
+    ViewState.ModelListStatus = ModelListStatus;
+    ViewState.ReasoningMode = ToReasoningModeLabel(CurrentReasoningIntensity);
+    ViewState.ReasoningOptionsStatus = ReasoningOptionsStatus;
+    for (const EAIEditorAssistantReasoningIntensity ModeOption : CachedReasoningModeOptions)
+    {
+        ViewState.ReasoningModeOptions.Add(ToReasoningModeLabel(ModeOption));
+    }
     ViewState.StatusMessage = StatusMessage;
     ViewState.SendButtonText = GetSendButtonText();
     ViewState.bCanSend = CanSendRequest();
@@ -1232,6 +1301,9 @@ FAIEditorAssistantChatPanelViewState FAIEditorAssistantChatController::GetViewSt
     ViewState.bCanEditSessions = CanEditSessions();
     ViewState.bIsSending = bIsSending;
     ViewState.bIsGeneratingTitle = IsGeneratingTitle();
+    ViewState.bIsModelListLoading = bIsModelListLoading;
+    ViewState.bAllowManualModelInput = bAllowManualModelInput || CachedModelOptions.Num() == 0;
+    ViewState.bIsReasoningOptionsLoading = bIsReasoningOptionsLoading;
 
     if (const FAIEditorAssistantChatSession* Session = GetActiveSession())
     {
@@ -1351,7 +1423,194 @@ const FAIEditorAssistantChatSession* FAIEditorAssistantChatController::FindSessi
 
 void FAIEditorAssistantChatController::LoadModelFromSettings()
 {
-    CurrentModel = GetDefault<UAIEditorAssistantSettings>()->Model;
+    CurrentModel = GetDefault<UAIEditorAssistantSettings>()->Model.TrimStartAndEnd();
+}
+
+void FAIEditorAssistantChatController::LoadReasoningFromSettings()
+{
+    CurrentReasoningIntensity = GetDefault<UAIEditorAssistantSettings>()->ReasoningIntensity;
+}
+
+void FAIEditorAssistantChatController::RefreshModelOptionsInternal(const bool bUserInitiated)
+{
+    FString ResolveError;
+    FAIEditorAssistantChatServiceSettings Settings;
+    if (!ResolveModelListSettings(Settings, ResolveError))
+    {
+        bIsModelListLoading = false;
+        bAllowManualModelInput = true;
+        CachedModelOptions.Reset();
+        ModelListStatus = ResolveError;
+        BroadcastStateChanged();
+        return;
+    }
+
+    bIsModelListLoading = true;
+    bAllowManualModelInput = false;
+    ModelListStatus = bUserInitiated ? TEXT("Refreshing available models...") : TEXT("Loading available models...");
+    const int32 RequestSerial = ++NextModelListRequestSerial;
+    ActiveModelListRequestSerial = RequestSerial;
+    BroadcastStateChanged();
+
+    const TWeakPtr<FAIEditorAssistantChatController> WeakController = AsShared();
+    if (!ChatService->FetchAvailableModels(
+            Settings,
+            [WeakController, RequestSerial](const FAIEditorAssistantModelListResponse& Response)
+            {
+                const TSharedPtr<FAIEditorAssistantChatController> Pinned = WeakController.Pin();
+                if (!Pinned.IsValid() || Pinned->ActiveModelListRequestSerial != RequestSerial)
+                {
+                    return;
+                }
+
+                Pinned->ActiveModelListRequestSerial = 0;
+                Pinned->bIsModelListLoading = false;
+                if (Response.bRequestSucceeded && Response.Models.Num() > 0)
+                {
+                    Pinned->CachedModelOptions = Response.Models;
+                    Pinned->bAllowManualModelInput = false;
+                    Pinned->ModelListStatus = FString::Printf(TEXT("Loaded %d model(s) from provider."), Response.Models.Num());
+
+                    const bool bCurrentModelInList = Pinned->CachedModelOptions.ContainsByPredicate([&Pinned](const FString& Value)
+                    {
+                        return Value.Equals(Pinned->CurrentModel, ESearchCase::CaseSensitive);
+                    });
+                    if (!bCurrentModelInList)
+                    {
+                        Pinned->CurrentModel = Pinned->CachedModelOptions[0];
+                        Pinned->RefreshReasoningOptionsInternal(false);
+                    }
+                }
+                else
+                {
+                    Pinned->CachedModelOptions.Reset();
+                    Pinned->bAllowManualModelInput = true;
+                    Pinned->ModelListStatus = Response.ErrorMessage.IsEmpty()
+                        ? TEXT("Failed to load models. You can still type a model name manually.")
+                        : FString::Printf(TEXT("%s You can still type a model name manually."), *Response.ErrorMessage);
+                }
+
+                Pinned->BroadcastStateChanged();
+            }))
+    {
+        ActiveModelListRequestSerial = 0;
+        bIsModelListLoading = false;
+        bAllowManualModelInput = true;
+        CachedModelOptions.Reset();
+        ModelListStatus = TEXT("Failed to start model list request. You can still type a model name manually.");
+        BroadcastStateChanged();
+    }
+}
+
+void FAIEditorAssistantChatController::RefreshReasoningOptionsInternal(const bool bUserInitiated)
+{
+    FString ResolveError;
+    FAIEditorAssistantChatServiceSettings Settings;
+    if (!ResolveModelListSettings(Settings, ResolveError))
+    {
+        bIsReasoningOptionsLoading = false;
+        CachedReasoningModeOptions = {
+            EAIEditorAssistantReasoningIntensity::ProviderDefault,
+            EAIEditorAssistantReasoningIntensity::Disabled,
+            EAIEditorAssistantReasoningIntensity::Medium
+        };
+        ReasoningOptionsStatus = ResolveError;
+        BroadcastStateChanged();
+        return;
+    }
+
+    const FString Model = CurrentModel.TrimStartAndEnd();
+    if (Model.IsEmpty())
+    {
+        bIsReasoningOptionsLoading = false;
+        CachedReasoningModeOptions = { EAIEditorAssistantReasoningIntensity::ProviderDefault };
+        ReasoningOptionsStatus = TEXT("Select a model first to load reasoning options.");
+        BroadcastStateChanged();
+        return;
+    }
+
+    bIsReasoningOptionsLoading = true;
+    ReasoningOptionsStatus = bUserInitiated ? TEXT("Refreshing reasoning options...") : TEXT("Loading reasoning options...");
+    const int32 RequestSerial = ++NextReasoningOptionsRequestSerial;
+    ActiveReasoningOptionsRequestSerial = RequestSerial;
+    BroadcastStateChanged();
+
+    const TWeakPtr<FAIEditorAssistantChatController> WeakController = AsShared();
+    if (!ChatService->FetchReasoningOptions(
+            Settings,
+            Model,
+            [WeakController, RequestSerial](const FAIEditorAssistantReasoningOptionsResponse& Response)
+            {
+                const TSharedPtr<FAIEditorAssistantChatController> Pinned = WeakController.Pin();
+                if (!Pinned.IsValid() || Pinned->ActiveReasoningOptionsRequestSerial != RequestSerial)
+                {
+                    return;
+                }
+
+                Pinned->ActiveReasoningOptionsRequestSerial = 0;
+                Pinned->bIsReasoningOptionsLoading = false;
+                Pinned->CachedReasoningModeOptions = Response.Options;
+                if (Pinned->CachedReasoningModeOptions.Num() == 0)
+                {
+                    Pinned->CachedReasoningModeOptions = { EAIEditorAssistantReasoningIntensity::ProviderDefault };
+                }
+
+                const bool bContainsCurrent = Pinned->CachedReasoningModeOptions.Contains(Pinned->CurrentReasoningIntensity);
+                if (!bContainsCurrent)
+                {
+                    Pinned->CurrentReasoningIntensity = Pinned->CachedReasoningModeOptions[0];
+                }
+
+                Pinned->ReasoningOptionsStatus = Response.bRequestSucceeded
+                    ? TEXT("Reasoning options loaded from provider.")
+                    : (Response.ErrorMessage.IsEmpty()
+                        ? TEXT("Using fallback reasoning options for this provider/model.")
+                        : FString::Printf(TEXT("%s Using fallback reasoning options."), *Response.ErrorMessage));
+                Pinned->BroadcastStateChanged();
+            }))
+    {
+        ActiveReasoningOptionsRequestSerial = 0;
+        bIsReasoningOptionsLoading = false;
+        CachedReasoningModeOptions = {
+            EAIEditorAssistantReasoningIntensity::ProviderDefault,
+            EAIEditorAssistantReasoningIntensity::Disabled,
+            EAIEditorAssistantReasoningIntensity::Medium
+        };
+        ReasoningOptionsStatus = TEXT("Failed to start reasoning options request. Using fallback options.");
+        BroadcastStateChanged();
+    }
+}
+
+bool FAIEditorAssistantChatController::ResolveModelListSettings(FAIEditorAssistantChatServiceSettings& OutSettings, FString& OutError) const
+{
+    const UAIEditorAssistantSettings* Settings = GetDefault<UAIEditorAssistantSettings>();
+    FString BaseUrl;
+    OutSettings.Provider = ResolveEffectiveProvider(*Settings, BaseUrl);
+    OutSettings.BaseUrl = BaseUrl;
+    OutSettings.ApiKey = Settings->ApiKey.TrimStartAndEnd();
+    OutSettings.ReasoningIntensity = Settings->ReasoningIntensity;
+
+    if (OutSettings.BaseUrl.IsEmpty())
+    {
+        OutError = OutSettings.Provider == EAIEditorAssistantAPIProvider::Custom
+            ? TEXT("Base URL is required for Custom provider.")
+            : TEXT("Provider base URL is empty.");
+        return false;
+    }
+
+    if (!OutSettings.BaseUrl.StartsWith(TEXT("http://")) && !OutSettings.BaseUrl.StartsWith(TEXT("https://")))
+    {
+        OutError = TEXT("Provider base URL must start with http:// or https://");
+        return false;
+    }
+
+    if (OutSettings.ApiKey.IsEmpty())
+    {
+        OutError = TEXT("API Key is not configured. Open Project Settings > Plugins > AI Editor Assistant.");
+        return false;
+    }
+
+    return true;
 }
 
 bool FAIEditorAssistantChatController::SaveModelToSettings(FString& OutError) const
@@ -1369,19 +1628,65 @@ bool FAIEditorAssistantChatController::SaveModelToSettings(FString& OutError) co
     return true;
 }
 
+bool FAIEditorAssistantChatController::SaveReasoningToSettings(FString& OutError) const
+{
+    UAIEditorAssistantSettings* MutableSettings = GetMutableDefault<UAIEditorAssistantSettings>();
+    MutableSettings->ReasoningIntensity = CurrentReasoningIntensity;
+    MutableSettings->SaveConfig();
+    return true;
+}
+
+EAIEditorAssistantAPIProvider FAIEditorAssistantChatController::ResolveEffectiveProvider(const UAIEditorAssistantSettings& Settings, FString& OutBaseUrl) const
+{
+    OutBaseUrl = Settings.BaseUrl.TrimStartAndEnd();
+    while (OutBaseUrl.EndsWith(TEXT("/")))
+    {
+        OutBaseUrl.LeftChopInline(1, EAllowShrinking::No);
+    }
+
+    switch (Settings.Provider)
+    {
+    case EAIEditorAssistantAPIProvider::OpenAI:
+        OutBaseUrl = OpenAIOfficialBaseUrl;
+        return EAIEditorAssistantAPIProvider::OpenAI;
+
+    case EAIEditorAssistantAPIProvider::DeepSeek:
+        OutBaseUrl = DeepSeekOfficialBaseUrl;
+        return EAIEditorAssistantAPIProvider::DeepSeek;
+
+    case EAIEditorAssistantAPIProvider::Custom:
+        return EAIEditorAssistantAPIProvider::Custom;
+
+    case EAIEditorAssistantAPIProvider::OpenAICompatible:
+        if (OutBaseUrl.IsEmpty() || IsOpenAIOfficialUrl(OutBaseUrl))
+        {
+            OutBaseUrl = OpenAIOfficialBaseUrl;
+            return EAIEditorAssistantAPIProvider::OpenAI;
+        }
+        return EAIEditorAssistantAPIProvider::Custom;
+
+    case EAIEditorAssistantAPIProvider::Anthropic:
+    case EAIEditorAssistantAPIProvider::Gemini:
+    default:
+        return EAIEditorAssistantAPIProvider::Custom;
+    }
+}
+
 bool FAIEditorAssistantChatController::ResolveServiceSettings(FAIEditorAssistantChatServiceSettings& OutSettings, FString& OutError) const
 {
     const UAIEditorAssistantSettings* Settings = GetDefault<UAIEditorAssistantSettings>();
-    OutSettings.BaseUrl = Settings->BaseUrl.TrimStartAndEnd();
-    OutSettings.BaseUrl.RemoveFromEnd(TEXT("/"));
+    FString BaseUrl;
+    OutSettings.Provider = ResolveEffectiveProvider(*Settings, BaseUrl);
+    OutSettings.BaseUrl = BaseUrl;
     OutSettings.ApiKey = Settings->ApiKey.TrimStartAndEnd();
     OutSettings.Model = CurrentModel.TrimStartAndEnd();
-    OutSettings.Provider = Settings->Provider;
-    OutSettings.ReasoningIntensity = Settings->ReasoningIntensity;
+    OutSettings.ReasoningIntensity = CurrentReasoningIntensity;
 
     if (OutSettings.BaseUrl.IsEmpty())
     {
-        OutError = TEXT("Base URL is not configured. Open Project Settings > Plugins > AI Editor Assistant.");
+        OutError = OutSettings.Provider == EAIEditorAssistantAPIProvider::Custom
+            ? TEXT("Base URL is not configured for Custom provider. Open Project Settings > Plugins > AI Editor Assistant.")
+            : TEXT("Provider base URL is empty.");
         return false;
     }
 
@@ -1404,6 +1709,70 @@ bool FAIEditorAssistantChatController::ResolveServiceSettings(FAIEditorAssistant
     }
 
     return true;
+}
+
+FString FAIEditorAssistantChatController::ToReasoningModeLabel(const EAIEditorAssistantReasoningIntensity Intensity) const
+{
+    switch (Intensity)
+    {
+    case EAIEditorAssistantReasoningIntensity::ProviderDefault:
+        return TEXT("Provider Default");
+    case EAIEditorAssistantReasoningIntensity::Disabled:
+        return TEXT("Disabled");
+    case EAIEditorAssistantReasoningIntensity::Minimal:
+        return TEXT("Minimal");
+    case EAIEditorAssistantReasoningIntensity::Low:
+        return TEXT("Low");
+    case EAIEditorAssistantReasoningIntensity::Medium:
+        return TEXT("Medium");
+    case EAIEditorAssistantReasoningIntensity::High:
+        return TEXT("High");
+    case EAIEditorAssistantReasoningIntensity::Maximum:
+        return TEXT("Maximum");
+    default:
+        return TEXT("Provider Default");
+    }
+}
+
+bool FAIEditorAssistantChatController::TryParseReasoningModeLabel(const FString& Label, EAIEditorAssistantReasoningIntensity& OutIntensity) const
+{
+    const FString Normalized = Label.TrimStartAndEnd().ToLower();
+    if (Normalized == TEXT("provider default") || Normalized == TEXT("providerdefault") || Normalized == TEXT("default"))
+    {
+        OutIntensity = EAIEditorAssistantReasoningIntensity::ProviderDefault;
+        return true;
+    }
+    if (Normalized == TEXT("disabled") || Normalized == TEXT("none"))
+    {
+        OutIntensity = EAIEditorAssistantReasoningIntensity::Disabled;
+        return true;
+    }
+    if (Normalized == TEXT("minimal"))
+    {
+        OutIntensity = EAIEditorAssistantReasoningIntensity::Minimal;
+        return true;
+    }
+    if (Normalized == TEXT("low"))
+    {
+        OutIntensity = EAIEditorAssistantReasoningIntensity::Low;
+        return true;
+    }
+    if (Normalized == TEXT("medium") || Normalized == TEXT("enabled"))
+    {
+        OutIntensity = EAIEditorAssistantReasoningIntensity::Medium;
+        return true;
+    }
+    if (Normalized == TEXT("high"))
+    {
+        OutIntensity = EAIEditorAssistantReasoningIntensity::High;
+        return true;
+    }
+    if (Normalized == TEXT("maximum") || Normalized == TEXT("xhigh") || Normalized == TEXT("max"))
+    {
+        OutIntensity = EAIEditorAssistantReasoningIntensity::Maximum;
+        return true;
+    }
+    return false;
 }
 
 FString FAIEditorAssistantChatController::BuildContextSummary(const FAIEditorAssistantChatSession& Session) const

@@ -2,6 +2,7 @@
 
 #include "HttpModule.h"
 #include "Interfaces/IHttpResponse.h"
+#include "GenericPlatform/GenericPlatformHttp.h"
 #include "Misc/Base64.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
@@ -13,9 +14,13 @@ struct FAIEditorAssistantOpenAIChatService::FPendingServiceRequest
     TSharedPtr<IHttpRequest, ESPMode::ThreadSafe> HttpRequest;
     FStreamChunkCallback OnStreamChunk;
     FRequestCompleteCallback OnComplete;
+    FModelListCompleteCallback OnModelListComplete;
+    FReasoningOptionsCompleteCallback OnReasoningOptionsComplete;
     int32 ProcessedLength = 0;
-    EAIEditorAssistantAPIProvider Provider = EAIEditorAssistantAPIProvider::OpenAICompatible;
+    EAIEditorAssistantAPIProvider Provider = EAIEditorAssistantAPIProvider::OpenAI;
     bool bTreatProgressAsEventStream = true;
+    bool bIsModelListRequest = false;
+    bool bIsReasoningOptionsRequest = false;
 };
 
 namespace
@@ -221,6 +226,11 @@ namespace
     FString BuildChatCompletionsUrl(const FString& BaseUrl)
     {
         return BaseUrl.EndsWith(TEXT("/chat/completions")) ? BaseUrl : BaseUrl + TEXT("/chat/completions");
+    }
+
+    FString BuildModelsUrl(const FString& BaseUrl)
+    {
+        return BaseUrl.EndsWith(TEXT("/models")) ? BaseUrl : BaseUrl + TEXT("/models");
     }
 
     FString BuildAnthropicMessagesUrl(const FString& BaseUrl)
@@ -950,6 +960,8 @@ namespace
             break;
 
         case EAIEditorAssistantAPIProvider::DeepSeek:
+        case EAIEditorAssistantAPIProvider::OpenAI:
+        case EAIEditorAssistantAPIProvider::Custom:
         case EAIEditorAssistantAPIProvider::OpenAICompatible:
         default:
             OutRequestData.Url = BuildChatCompletionsUrl(Settings.BaseUrl);
@@ -987,11 +999,252 @@ namespace
             break;
 
         case EAIEditorAssistantAPIProvider::DeepSeek:
+        case EAIEditorAssistantAPIProvider::OpenAI:
+        case EAIEditorAssistantAPIProvider::Custom:
         case EAIEditorAssistantAPIProvider::OpenAICompatible:
         default:
             HttpRequest->SetHeader(TEXT("Authorization"), FString::Printf(TEXT("Bearer %s"), *Settings.ApiKey));
             break;
         }
+    }
+
+    FString ExtractServiceErrorMessage(const FString& ResponseBody)
+    {
+        const TSharedPtr<FJsonObject> ResponseObject = ParseObjectString(ResponseBody);
+        if (!ResponseObject.IsValid())
+        {
+            return FString();
+        }
+
+        FString ErrorMessage;
+        if (ResponseObject->TryGetStringField(TEXT("message"), ErrorMessage) && !ErrorMessage.IsEmpty())
+        {
+            return ErrorMessage;
+        }
+
+        const TSharedPtr<FJsonObject>* ErrorObject = nullptr;
+        if (ResponseObject->TryGetObjectField(TEXT("error"), ErrorObject) && ErrorObject != nullptr && (*ErrorObject).IsValid())
+        {
+            if ((*ErrorObject)->TryGetStringField(TEXT("message"), ErrorMessage) && !ErrorMessage.IsEmpty())
+            {
+                return ErrorMessage;
+            }
+
+            if ((*ErrorObject)->TryGetStringField(TEXT("error"), ErrorMessage) && !ErrorMessage.IsEmpty())
+            {
+                return ErrorMessage;
+            }
+        }
+
+        return FString();
+    }
+
+    TArray<FString> ParseModelIdsFromListResponse(const FString& ResponseBody)
+    {
+        TArray<FString> Models;
+        const TSharedPtr<FJsonObject> ResponseObject = ParseObjectString(ResponseBody);
+        if (!ResponseObject.IsValid())
+        {
+            return Models;
+        }
+
+        const TArray<TSharedPtr<FJsonValue>>* DataArray = nullptr;
+        if (!ResponseObject->TryGetArrayField(TEXT("data"), DataArray) || DataArray == nullptr)
+        {
+            return Models;
+        }
+
+        TSet<FString> UniqueModels;
+        for (const TSharedPtr<FJsonValue>& ItemValue : *DataArray)
+        {
+            const TSharedPtr<FJsonObject>* ItemObject = nullptr;
+            if (!ItemValue.IsValid() || !ItemValue->TryGetObject(ItemObject) || ItemObject == nullptr || !(*ItemObject).IsValid())
+            {
+                continue;
+            }
+
+            FString ModelId;
+            if ((*ItemObject)->TryGetStringField(TEXT("id"), ModelId))
+            {
+                ModelId = ModelId.TrimStartAndEnd();
+                if (!ModelId.IsEmpty())
+                {
+                    UniqueModels.Add(ModelId);
+                }
+            }
+        }
+
+        for (const FString& ModelId : UniqueModels)
+        {
+            Models.Add(ModelId);
+        }
+        Models.Sort([](const FString& A, const FString& B)
+        {
+            return A < B;
+        });
+        return Models;
+    }
+
+    TArray<EAIEditorAssistantReasoningIntensity> BuildDefaultReasoningOptions(const EAIEditorAssistantAPIProvider Provider)
+    {
+        if (Provider == EAIEditorAssistantAPIProvider::DeepSeek)
+        {
+            return {
+                EAIEditorAssistantReasoningIntensity::ProviderDefault,
+                EAIEditorAssistantReasoningIntensity::Disabled,
+                EAIEditorAssistantReasoningIntensity::Medium
+            };
+        }
+
+        return {
+            EAIEditorAssistantReasoningIntensity::ProviderDefault,
+            EAIEditorAssistantReasoningIntensity::Disabled,
+            EAIEditorAssistantReasoningIntensity::Minimal,
+            EAIEditorAssistantReasoningIntensity::Low,
+            EAIEditorAssistantReasoningIntensity::Medium,
+            EAIEditorAssistantReasoningIntensity::High,
+            EAIEditorAssistantReasoningIntensity::Maximum
+        };
+    }
+
+    void AddReasoningOptionByName(const FString& RawName, TSet<EAIEditorAssistantReasoningIntensity>& OutSet)
+    {
+        const FString Name = RawName.TrimStartAndEnd().ToLower();
+        if (Name.IsEmpty())
+        {
+            return;
+        }
+
+        if (Name == TEXT("default") || Name == TEXT("provider_default") || Name == TEXT("providerdefault") || Name == TEXT("auto"))
+        {
+            OutSet.Add(EAIEditorAssistantReasoningIntensity::ProviderDefault);
+            return;
+        }
+        if (Name == TEXT("disabled") || Name == TEXT("none") || Name == TEXT("off"))
+        {
+            OutSet.Add(EAIEditorAssistantReasoningIntensity::Disabled);
+            return;
+        }
+        if (Name == TEXT("minimal"))
+        {
+            OutSet.Add(EAIEditorAssistantReasoningIntensity::Minimal);
+            return;
+        }
+        if (Name == TEXT("low"))
+        {
+            OutSet.Add(EAIEditorAssistantReasoningIntensity::Low);
+            return;
+        }
+        if (Name == TEXT("medium") || Name == TEXT("enabled") || Name == TEXT("on"))
+        {
+            OutSet.Add(EAIEditorAssistantReasoningIntensity::Medium);
+            return;
+        }
+        if (Name == TEXT("high"))
+        {
+            OutSet.Add(EAIEditorAssistantReasoningIntensity::High);
+            return;
+        }
+        if (Name == TEXT("maximum") || Name == TEXT("max") || Name == TEXT("xhigh"))
+        {
+            OutSet.Add(EAIEditorAssistantReasoningIntensity::Maximum);
+            return;
+        }
+    }
+
+    void AddReasoningOptionsFromArrayField(const TSharedPtr<FJsonObject>& Object, const TCHAR* FieldName, TSet<EAIEditorAssistantReasoningIntensity>& OutSet)
+    {
+        if (!Object.IsValid())
+        {
+            return;
+        }
+
+        const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
+        if (!Object->TryGetArrayField(FieldName, Values) || Values == nullptr)
+        {
+            return;
+        }
+
+        for (const TSharedPtr<FJsonValue>& Value : *Values)
+        {
+            if (!Value.IsValid())
+            {
+                continue;
+            }
+
+            if (Value->Type == EJson::String)
+            {
+                AddReasoningOptionByName(Value->AsString(), OutSet);
+            }
+        }
+    }
+
+    TArray<EAIEditorAssistantReasoningIntensity> ParseReasoningOptionsFromModelDetail(
+        const FString& ResponseBody,
+        const EAIEditorAssistantAPIProvider Provider)
+    {
+        TSet<EAIEditorAssistantReasoningIntensity> OptionsSet;
+        OptionsSet.Add(EAIEditorAssistantReasoningIntensity::ProviderDefault);
+
+        const TSharedPtr<FJsonObject> RootObject = ParseObjectString(ResponseBody);
+        if (RootObject.IsValid())
+        {
+            AddReasoningOptionsFromArrayField(RootObject, TEXT("supported_reasoning_efforts"), OptionsSet);
+            AddReasoningOptionsFromArrayField(RootObject, TEXT("reasoning_effort_values"), OptionsSet);
+            AddReasoningOptionsFromArrayField(RootObject, TEXT("reasoning_modes"), OptionsSet);
+            AddReasoningOptionsFromArrayField(RootObject, TEXT("thinking_modes"), OptionsSet);
+
+            const TSharedPtr<FJsonObject>* ReasoningObject = nullptr;
+            if (RootObject->TryGetObjectField(TEXT("reasoning"), ReasoningObject) && ReasoningObject != nullptr && (*ReasoningObject).IsValid())
+            {
+                AddReasoningOptionsFromArrayField(*ReasoningObject, TEXT("efforts"), OptionsSet);
+                AddReasoningOptionsFromArrayField(*ReasoningObject, TEXT("supported_efforts"), OptionsSet);
+            }
+
+            const TSharedPtr<FJsonObject>* ThinkingObject = nullptr;
+            if (RootObject->TryGetObjectField(TEXT("thinking"), ThinkingObject) && ThinkingObject != nullptr && (*ThinkingObject).IsValid())
+            {
+                bool bEnabled = false;
+                if ((*ThinkingObject)->TryGetBoolField(TEXT("enabled"), bEnabled))
+                {
+                    OptionsSet.Add(EAIEditorAssistantReasoningIntensity::Disabled);
+                    if (bEnabled)
+                    {
+                        OptionsSet.Add(EAIEditorAssistantReasoningIntensity::Medium);
+                    }
+                }
+                AddReasoningOptionsFromArrayField(*ThinkingObject, TEXT("modes"), OptionsSet);
+            }
+        }
+
+        if (OptionsSet.Num() <= 1)
+        {
+            for (const EAIEditorAssistantReasoningIntensity Option : BuildDefaultReasoningOptions(Provider))
+            {
+                OptionsSet.Add(Option);
+            }
+        }
+
+        TArray<EAIEditorAssistantReasoningIntensity> OutOptions;
+        const TArray<EAIEditorAssistantReasoningIntensity> PreferredOrder = {
+            EAIEditorAssistantReasoningIntensity::ProviderDefault,
+            EAIEditorAssistantReasoningIntensity::Disabled,
+            EAIEditorAssistantReasoningIntensity::Minimal,
+            EAIEditorAssistantReasoningIntensity::Low,
+            EAIEditorAssistantReasoningIntensity::Medium,
+            EAIEditorAssistantReasoningIntensity::High,
+            EAIEditorAssistantReasoningIntensity::Maximum
+        };
+
+        for (const EAIEditorAssistantReasoningIntensity Candidate : PreferredOrder)
+        {
+            if (OptionsSet.Contains(Candidate))
+            {
+                OutOptions.Add(Candidate);
+            }
+        }
+
+        return OutOptions;
     }
 
     FString ExtractAnthropicTextBlock(const TSharedPtr<FJsonObject>& BlockObject)
@@ -1231,6 +1484,21 @@ bool FAIEditorAssistantOpenAIChatService::SendStreamingChatRequest(
     return BeginRequest(Settings, Request, TEXT("application/json"), MoveTemp(OnStreamChunk), MoveTemp(OnComplete));
 }
 
+bool FAIEditorAssistantOpenAIChatService::FetchAvailableModels(
+    const FAIEditorAssistantChatServiceSettings& Settings,
+    FModelListCompleteCallback&& OnComplete)
+{
+    return BeginFetchModelsRequest(Settings, MoveTemp(OnComplete));
+}
+
+bool FAIEditorAssistantOpenAIChatService::FetchReasoningOptions(
+    const FAIEditorAssistantChatServiceSettings& Settings,
+    const FString& Model,
+    FReasoningOptionsCompleteCallback&& OnComplete)
+{
+    return BeginFetchReasoningOptionsRequest(Settings, Model, MoveTemp(OnComplete));
+}
+
 void FAIEditorAssistantOpenAIChatService::CancelActiveRequests()
 {
     TArray<TSharedPtr<FPendingServiceRequest>> RequestsToCancel = ActiveRequests;
@@ -1243,6 +1511,85 @@ void FAIEditorAssistantOpenAIChatService::CancelActiveRequests()
             Context->HttpRequest->CancelRequest();
         }
     }
+}
+
+bool FAIEditorAssistantOpenAIChatService::BeginFetchModelsRequest(
+    const FAIEditorAssistantChatServiceSettings& Settings,
+    FModelListCompleteCallback&& OnComplete)
+{
+    if (!OnComplete)
+    {
+        return false;
+    }
+
+    const FString ModelsUrl = BuildModelsUrl(Settings.BaseUrl);
+    if (ModelsUrl.IsEmpty())
+    {
+        return false;
+    }
+
+    TSharedRef<IHttpRequest, ESPMode::ThreadSafe> HttpRequest = FHttpModule::Get().CreateRequest();
+    HttpRequest->SetURL(ModelsUrl);
+    HttpRequest->SetVerb(TEXT("GET"));
+    ApplyProviderHeaders(Settings, HttpRequest, TEXT("application/json"));
+    HttpRequest->OnProcessRequestComplete().BindSP(AsShared(), &FAIEditorAssistantOpenAIChatService::HandleRequestComplete);
+
+    TSharedPtr<FPendingServiceRequest> Context = MakeShared<FPendingServiceRequest>();
+    Context->HttpRequest = HttpRequest;
+    Context->OnModelListComplete = MoveTemp(OnComplete);
+    Context->Provider = Settings.Provider;
+    Context->bTreatProgressAsEventStream = false;
+    Context->bIsModelListRequest = true;
+    ActiveRequests.Add(Context);
+
+    if (!HttpRequest->ProcessRequest())
+    {
+        RemoveRequestContext(HttpRequest);
+        return false;
+    }
+
+    return true;
+}
+
+bool FAIEditorAssistantOpenAIChatService::BeginFetchReasoningOptionsRequest(
+    const FAIEditorAssistantChatServiceSettings& Settings,
+    const FString& Model,
+    FReasoningOptionsCompleteCallback&& OnComplete)
+{
+    if (!OnComplete)
+    {
+        return false;
+    }
+
+    const FString TrimmedModel = Model.TrimStartAndEnd();
+    if (TrimmedModel.IsEmpty())
+    {
+        return false;
+    }
+
+    const FString EncodedModel = FGenericPlatformHttp::UrlEncode(TrimmedModel);
+    const FString Url = FString::Printf(TEXT("%s/models/%s"), *Settings.BaseUrl, *EncodedModel);
+    TSharedRef<IHttpRequest, ESPMode::ThreadSafe> HttpRequest = FHttpModule::Get().CreateRequest();
+    HttpRequest->SetURL(Url);
+    HttpRequest->SetVerb(TEXT("GET"));
+    ApplyProviderHeaders(Settings, HttpRequest, TEXT("application/json"));
+    HttpRequest->OnProcessRequestComplete().BindSP(AsShared(), &FAIEditorAssistantOpenAIChatService::HandleRequestComplete);
+
+    TSharedPtr<FPendingServiceRequest> Context = MakeShared<FPendingServiceRequest>();
+    Context->HttpRequest = HttpRequest;
+    Context->OnReasoningOptionsComplete = MoveTemp(OnComplete);
+    Context->Provider = Settings.Provider;
+    Context->bTreatProgressAsEventStream = false;
+    Context->bIsReasoningOptionsRequest = true;
+    ActiveRequests.Add(Context);
+
+    if (!HttpRequest->ProcessRequest())
+    {
+        RemoveRequestContext(HttpRequest);
+        return false;
+    }
+
+    return true;
 }
 
 bool FAIEditorAssistantOpenAIChatService::BeginRequest(
@@ -1313,6 +1660,93 @@ void FAIEditorAssistantOpenAIChatService::HandleRequestComplete(FHttpRequestPtr 
     TSharedPtr<FPendingServiceRequest> Context = FindRequestContext(Request);
     if (!Context.IsValid())
     {
+        return;
+    }
+
+    if (Context->bIsModelListRequest)
+    {
+        FAIEditorAssistantModelListResponse ModelListResponse;
+        ModelListResponse.bRequestSucceeded = bWasSuccessful && Response.IsValid();
+
+        if (Response.IsValid())
+        {
+            ModelListResponse.ResponseCode = Response->GetResponseCode();
+            const FString ResponseBody = Response->GetContentAsString();
+            if (ModelListResponse.bRequestSucceeded && ModelListResponse.ResponseCode >= 200 && ModelListResponse.ResponseCode < 300)
+            {
+                ModelListResponse.Models = ParseModelIdsFromListResponse(ResponseBody);
+                if (ModelListResponse.Models.Num() == 0)
+                {
+                    ModelListResponse.bRequestSucceeded = false;
+                    ModelListResponse.ErrorMessage = TEXT("The provider returned an empty model list.");
+                }
+            }
+            else
+            {
+                ModelListResponse.bRequestSucceeded = false;
+                ModelListResponse.ErrorMessage = ExtractServiceErrorMessage(ResponseBody);
+            }
+        }
+        else
+        {
+            ModelListResponse.bRequestSucceeded = false;
+        }
+
+        if (ModelListResponse.ErrorMessage.IsEmpty() && !ModelListResponse.bRequestSucceeded)
+        {
+            ModelListResponse.ErrorMessage = ModelListResponse.ResponseCode > 0
+                ? FString::Printf(TEXT("Failed to fetch models (HTTP %d)."), ModelListResponse.ResponseCode)
+                : TEXT("Failed to fetch models from provider.");
+        }
+
+        FModelListCompleteCallback ModelListCallback = MoveTemp(Context->OnModelListComplete);
+        RemoveRequestContext(Request);
+        if (ModelListCallback)
+        {
+            ModelListCallback(ModelListResponse);
+        }
+        return;
+    }
+
+    if (Context->bIsReasoningOptionsRequest)
+    {
+        FAIEditorAssistantReasoningOptionsResponse ReasoningResponse;
+        ReasoningResponse.bRequestSucceeded = bWasSuccessful && Response.IsValid();
+
+        if (Response.IsValid())
+        {
+            ReasoningResponse.ResponseCode = Response->GetResponseCode();
+            const FString ResponseBody = Response->GetContentAsString();
+            if (ReasoningResponse.bRequestSucceeded && ReasoningResponse.ResponseCode >= 200 && ReasoningResponse.ResponseCode < 300)
+            {
+                ReasoningResponse.Options = ParseReasoningOptionsFromModelDetail(ResponseBody, Context->Provider);
+            }
+            else
+            {
+                ReasoningResponse.bRequestSucceeded = false;
+                ReasoningResponse.ErrorMessage = ExtractServiceErrorMessage(ResponseBody);
+                ReasoningResponse.Options = BuildDefaultReasoningOptions(Context->Provider);
+            }
+        }
+        else
+        {
+            ReasoningResponse.bRequestSucceeded = false;
+            ReasoningResponse.Options = BuildDefaultReasoningOptions(Context->Provider);
+        }
+
+        if (ReasoningResponse.ErrorMessage.IsEmpty() && !ReasoningResponse.bRequestSucceeded)
+        {
+            ReasoningResponse.ErrorMessage = ReasoningResponse.ResponseCode > 0
+                ? FString::Printf(TEXT("Failed to fetch reasoning options (HTTP %d)."), ReasoningResponse.ResponseCode)
+                : TEXT("Failed to fetch reasoning options from provider.");
+        }
+
+        FReasoningOptionsCompleteCallback ReasoningCallback = MoveTemp(Context->OnReasoningOptionsComplete);
+        RemoveRequestContext(Request);
+        if (ReasoningCallback)
+        {
+            ReasoningCallback(ReasoningResponse);
+        }
         return;
     }
 

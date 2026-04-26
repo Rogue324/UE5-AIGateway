@@ -78,6 +78,11 @@ struct FAIEditorAssistantChatPanelViewState
     TArray<FString> PendingAttachmentPaths;
     FString DraftPrompt;
     FString Model;
+    TArray<FString> ModelOptions;
+    FString ModelListStatus;
+    FString ReasoningMode;
+    TArray<FString> ReasoningModeOptions;
+    FString ReasoningOptionsStatus;
     FString StatusMessage;
     FString SendButtonText;
     bool bCanSend = false;
@@ -85,4 +90,7 @@ struct FAIEditorAssistantChatPanelViewState
     bool bCanEditSessions = true;
     bool bIsSending = false;
     bool bIsGeneratingTitle = false;
+    bool bIsModelListLoading = false;
+    bool bAllowManualModelInput = false;
+    bool bIsReasoningOptionsLoading = false;
 };

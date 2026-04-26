@@ -18,6 +18,9 @@ public:
     void PersistActiveDraft();
 
     void SetModel(const FString& InModel);
+    void RefreshModelOptions();
+    void SetReasoningMode(const FString& InReasoningMode);
+    void RefreshReasoningOptions();
     void UpdateDraft(const FString& DraftText);
     void AddPendingImagePaths(const TArray<FString>& ImagePaths);
     void RemovePendingImageAt(int32 ImageIndex);
@@ -50,8 +53,16 @@ private:
     const FAIEditorAssistantChatSession* FindSessionById(const FString& SessionId) const;
 
     void LoadModelFromSettings();
+    void LoadReasoningFromSettings();
+    void RefreshModelOptionsInternal(bool bUserInitiated);
+    void RefreshReasoningOptionsInternal(bool bUserInitiated);
+    bool ResolveModelListSettings(FAIEditorAssistantChatServiceSettings& OutSettings, FString& OutError) const;
     bool SaveModelToSettings(FString& OutError) const;
+    bool SaveReasoningToSettings(FString& OutError) const;
     bool ResolveServiceSettings(FAIEditorAssistantChatServiceSettings& OutSettings, FString& OutError) const;
+    EAIEditorAssistantAPIProvider ResolveEffectiveProvider(const UAIEditorAssistantSettings& Settings, FString& OutBaseUrl) const;
+    FString ToReasoningModeLabel(EAIEditorAssistantReasoningIntensity Intensity) const;
+    bool TryParseReasoningModeLabel(const FString& Label, EAIEditorAssistantReasoningIntensity& OutIntensity) const;
     FString BuildContextSummary(const FAIEditorAssistantChatSession& Session) const;
 
     void AppendMessage(const FString& Role, const FString& Text);
@@ -115,6 +126,18 @@ private:
     FString CurrentModel;
     FString StatusMessage;
     bool bIsSending = false;
+    bool bIsModelListLoading = false;
+    bool bAllowManualModelInput = false;
+    bool bIsReasoningOptionsLoading = false;
+    int32 NextModelListRequestSerial = 0;
+    int32 ActiveModelListRequestSerial = 0;
+    TArray<FString> CachedModelOptions;
+    FString ModelListStatus;
+    int32 NextReasoningOptionsRequestSerial = 0;
+    int32 ActiveReasoningOptionsRequestSerial = 0;
+    EAIEditorAssistantReasoningIntensity CurrentReasoningIntensity = EAIEditorAssistantReasoningIntensity::ProviderDefault;
+    TArray<EAIEditorAssistantReasoningIntensity> CachedReasoningModeOptions;
+    FString ReasoningOptionsStatus;
     int32 NextRequestSerial = 0;
     int32 ActiveRequestSerial = 0;
     FSimpleMulticastDelegate StateChangedDelegate;

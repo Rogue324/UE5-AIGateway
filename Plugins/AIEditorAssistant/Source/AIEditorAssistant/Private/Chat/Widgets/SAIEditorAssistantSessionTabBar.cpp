@@ -35,7 +35,6 @@ void SAIEditorAssistantSessionTabBar::Construct(const FArguments& InArgs)
         .Padding(12.0f, 0.0f, 0.0f, 0.0f)
         [
             SNew(SButton)
-            .IsEnabled_Lambda([this]() { return bCanEditSessions; })
             .OnClicked_Lambda([this]()
             {
                 if (OnNewSessionRequested.IsBound())
@@ -57,8 +56,6 @@ void SAIEditorAssistantSessionTabBar::Construct(const FArguments& InArgs)
 
 void SAIEditorAssistantSessionTabBar::Refresh(const FAIEditorAssistantChatPanelViewState& ViewState)
 {
-    bCanEditSessions = ViewState.bCanEditSessions;
-
     if (!SessionTabsBox.IsValid())
     {
         return;
@@ -71,12 +68,12 @@ void SAIEditorAssistantSessionTabBar::Refresh(const FAIEditorAssistantChatPanelV
         .AutoWidth()
         .Padding(0.0f, 0.0f, 4.0f, 0.0f)
         [
-            BuildSessionTabWidget(SessionData, ViewState.bCanEditSessions)
+            BuildSessionTabWidget(SessionData)
         ];
     }
 }
 
-TSharedRef<SWidget> SAIEditorAssistantSessionTabBar::BuildSessionTabWidget(const FAIEditorAssistantSessionTabViewData& SessionData, bool bSessionsEditable)
+TSharedRef<SWidget> SAIEditorAssistantSessionTabBar::BuildSessionTabWidget(const FAIEditorAssistantSessionTabViewData& SessionData)
 {
     return SNew(SHorizontalBox)
 
@@ -94,15 +91,18 @@ TSharedRef<SWidget> SAIEditorAssistantSessionTabBar::BuildSessionTabWidget(const
                 }
                 return FReply::Handled();
             })
-            .IsEnabled(bSessionsEditable)
             .ContentPadding(FMargin(10.0f, 4.0f, 4.0f, 4.0f))
             [
                 SNew(STextBlock)
-                .Text(FText::FromString(TruncateWithEllipsis(SessionData.Title, 22)))
+                .Text(FText::FromString(
+                    (SessionData.bIsStreaming ? TEXT("● ") : TEXT("")) +
+                    TruncateWithEllipsis(SessionData.Title, 22)))
                 .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
                 .ColorAndOpacity(SessionData.bIsActive
                     ? FSlateColor(FLinearColor(1.0f, 0.54f, 0.08f))
-                    : FSlateColor(FLinearColor(0.42f, 0.42f, 0.46f)))
+                    : SessionData.bIsStreaming
+                        ? FSlateColor(FLinearColor(0.35f, 0.82f, 0.45f))
+                        : FSlateColor(FLinearColor(0.42f, 0.42f, 0.46f)))
             ]
         ]
 
@@ -120,7 +120,6 @@ TSharedRef<SWidget> SAIEditorAssistantSessionTabBar::BuildSessionTabWidget(const
                 }
                 return FReply::Handled();
             })
-            .IsEnabled(bSessionsEditable)
             .ContentPadding(FMargin(4.0f, 4.0f, 8.0f, 4.0f))
             [
                 SNew(STextBlock)

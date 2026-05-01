@@ -60,7 +60,8 @@ public:
         const FAIEditorAssistantChatServiceSettings& Settings,
         const FAIEditorAssistantChatCompletionRequest& Request,
         FStreamChunkCallback&& OnStreamChunk,
-        FRequestCompleteCallback&& OnComplete) = 0;
+        FRequestCompleteCallback&& OnComplete,
+        const FString& OwnerId = FString()) = 0;
     virtual bool FetchAvailableModels(
         const FAIEditorAssistantChatServiceSettings& Settings,
         FModelListCompleteCallback&& OnComplete) = 0;
@@ -70,6 +71,7 @@ public:
         FReasoningOptionsCompleteCallback&& OnComplete) = 0;
 
     virtual void CancelActiveRequests() = 0;
+    virtual void CancelRequestsByOwner(const FString& OwnerId) = 0;
 };
 
 class FAIEditorAssistantOpenAIChatService : public IAIEditorAssistantChatService, public TSharedFromThis<FAIEditorAssistantOpenAIChatService>
@@ -79,7 +81,8 @@ public:
         const FAIEditorAssistantChatServiceSettings& Settings,
         const FAIEditorAssistantChatCompletionRequest& Request,
         FStreamChunkCallback&& OnStreamChunk,
-        FRequestCompleteCallback&& OnComplete) override;
+        FRequestCompleteCallback&& OnComplete,
+        const FString& OwnerId = FString()) override;
     virtual bool FetchAvailableModels(
         const FAIEditorAssistantChatServiceSettings& Settings,
         FModelListCompleteCallback&& OnComplete) override;
@@ -89,6 +92,7 @@ public:
         FReasoningOptionsCompleteCallback&& OnComplete) override;
 
     virtual void CancelActiveRequests() override;
+    virtual void CancelRequestsByOwner(const FString& OwnerId) override;
 
 private:
     struct FPendingServiceRequest;
@@ -98,7 +102,8 @@ private:
         const FAIEditorAssistantChatCompletionRequest& Request,
         const FString& AcceptHeader,
         FStreamChunkCallback&& OnStreamChunk,
-        FRequestCompleteCallback&& OnComplete);
+        FRequestCompleteCallback&& OnComplete,
+        const FString& OwnerId = FString());
     bool BeginFetchModelsRequest(
         const FAIEditorAssistantChatServiceSettings& Settings,
         FModelListCompleteCallback&& OnComplete);

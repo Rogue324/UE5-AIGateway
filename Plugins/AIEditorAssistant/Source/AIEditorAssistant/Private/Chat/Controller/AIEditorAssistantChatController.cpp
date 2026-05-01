@@ -835,7 +835,8 @@ void FAIEditorAssistantChatController::BeginRoleDetectionAndSend()
         return;
     }
 
-    bIsDetectingRole = true;
+    const FString SessionId = Session->SessionId;
+    Session->bIsDetectingRole = true;
     BroadcastStateChanged();
 
     FAIEditorAssistantChatCompletionRequest ClassificationRequest;
@@ -870,7 +871,7 @@ void FAIEditorAssistantChatController::BeginRoleDetectionAndSend()
         Settings,
         ClassificationRequest,
         nullptr,
-        [WeakController](const FAIEditorAssistantChatServiceResponse& Response)
+        [WeakController, SessionId](const FAIEditorAssistantChatServiceResponse& Response)
         {
             const TSharedPtr<FAIEditorAssistantChatController> Pinned = WeakController.Pin();
             if (!Pinned.IsValid())
@@ -878,8 +879,8 @@ void FAIEditorAssistantChatController::BeginRoleDetectionAndSend()
                 return;
             }
 
-            FAIEditorAssistantChatSession* Session = Pinned->GetActiveSession();
-            if (Session == nullptr)
+            FAIEditorAssistantChatSession* TargetSession = Pinned->FindSessionById(SessionId);
+            if (TargetSession == nullptr)
             {
                 return;
             }
@@ -913,11 +914,12 @@ void FAIEditorAssistantChatController::BeginRoleDetectionAndSend()
                 }
             }
 
-            Session->AgentRoleId = DetectedRole;
-            Pinned->bIsDetectingRole = false;
-            Pinned->SessionStore->SaveSession(*Session);
-            Pinned->SendChatRequest();
-        });
+            TargetSession->AgentRoleId = DetectedRole;
+            TargetSession->bIsDetectingRole = false;
+            Pinned->SessionStore->SaveSession(*TargetSession);
+            Pinned->SendChatRequest(*TargetSession);
+        },
+        SessionId);
 }
 
 void FAIEditorAssistantChatController::CancelCurrentWork()
@@ -928,13 +930,14 @@ void FAIEditorAssistantChatController::CancelCurrentWork()
         return;
     }
 
-    if (bIsSending)
+    if (Session->bIsSending)
     {
-        ChatService->CancelActiveRequests();
+        ChatService->CancelRequestsByOwner(Session->SessionId);
     }
 
-    ActiveRequestSerial = 0;
-    bIsSending = false;
+    Session->ActiveRequestSerial = 0;
+    Session->bIsSending = false;
+    Session->bIsDetectingRole = false;
     Session->bAwaitingToolConfirmation = false;
     Session->PendingToolCalls.Reset();
     Session->PendingToolCallIndex = INDEX_NONE;
@@ -945,33 +948,28 @@ void FAIEditorAssistantChatController::CancelCurrentWork()
 
     if (Session->bAssistantMessageOpen && !Session->StreamedResponseCache.IsEmpty())
     {
-        FinalizeAssistantResponse();
+        FinalizeAssistantResponse(*Session);
     }
     else
     {
-        AbortAssistantResponse();
+        AbortAssistantResponse(*Session);
     }
 
     StatusMessage = TEXT("Canceled the current agent run.");
-    AppendMessage(TEXT("System"), TEXT("Canceled the current agent run."));
-    PersistActiveSession();
+    AppendMessage(*Session, TEXT("System"), TEXT("Canceled the current agent run."));
+    PersistSession(Session->SessionId);
     BroadcastStateChanged();
 }
 
 void FAIEditorAssistantChatController::CreateSession()
 {
-    if (!CanEditSessions())
-    {
-        return;
-    }
-
     CreateSessionInternal(true);
     BroadcastStateChanged();
 }
 
 void FAIEditorAssistantChatController::ActivateSession(const FString& SessionId)
 {
-    if (!CanEditSessions() || SessionId == ActiveSessionId || FindSessionById(SessionId) == nullptr)
+    if (SessionId == ActiveSessionId || FindSessionById(SessionId) == nullptr)
     {
         return;
     }
@@ -984,14 +982,18 @@ void FAIEditorAssistantChatController::ActivateSession(const FString& SessionId)
 
 void FAIEditorAssistantChatController::CloseSession(const FString& SessionId)
 {
-    if (!CanEditSessions())
+    FAIEditorAssistantChatSession* Session = FindSessionById(SessionId);
+    if (Session != nullptr)
     {
-        return;
+        if (Session->bIsSending || Session->bIsDetectingRole)
+        {
+            ChatService->CancelRequestsByOwner(SessionId);
+        }
     }
 
-    const int32 SessionIndex = Sessions.IndexOfByPredicate([&SessionId](const FAIEditorAssistantChatSession& Session)
+    const int32 SessionIndex = Sessions.IndexOfByPredicate([&SessionId](const FAIEditorAssistantChatSession& S)
     {
-        return Session.SessionId == SessionId;
+        return S.SessionId == SessionId;
     });
     if (!Sessions.IsValidIndex(SessionIndex))
     {
@@ -1021,7 +1023,7 @@ void FAIEditorAssistantChatController::CloseSession(const FString& SessionId)
 void FAIEditorAssistantChatController::SetAgentRole(const FString& RoleId)
 {
     FAIEditorAssistantChatSession* Session = GetActiveSession();
-    if (Session == nullptr || !CanEditSessions())
+    if (Session == nullptr)
     {
         return;
     }
@@ -1059,7 +1061,7 @@ FAIEditorAssistantChatPanelViewState FAIEditorAssistantChatController::GetViewSt
     ViewState.bCanSend = CanSendRequest();
     ViewState.bCanCancel = CanCancelWork();
     ViewState.bCanEditSessions = CanEditSessions();
-    ViewState.bIsSending = bIsSending;
+    ViewState.bIsSending = false;
     ViewState.bIsGeneratingTitle = IsGeneratingTitle();
     ViewState.bIsModelListLoading = bIsModelListLoading;
     ViewState.bAllowManualModelInput = bAllowManualModelInput || CachedModelOptions.Num() == 0;
@@ -1087,6 +1089,7 @@ FAIEditorAssistantChatPanelViewState FAIEditorAssistantChatController::GetViewSt
         Tab.SessionId = Session.SessionId;
         Tab.Title = Session.Title.IsEmpty() ? MakeNewSessionTitle() : Session.Title;
         Tab.bIsActive = Session.SessionId == ActiveSessionId;
+        Tab.bIsStreaming = Session.bIsSending || Session.bIsDetectingRole;
     }
 
     return ViewState;
@@ -1099,7 +1102,16 @@ FSimpleMulticastDelegate& FAIEditorAssistantChatController::OnStateChanged()
 
 void FAIEditorAssistantChatController::BroadcastStateChanged()
 {
-    if (bIsSending)
+    bool bAnyStreaming = false;
+    for (const FAIEditorAssistantChatSession& S : Sessions)
+    {
+        if (S.bIsSending || S.bIsDetectingRole)
+        {
+            bAnyStreaming = true;
+            break;
+        }
+    }
+    if (bAnyStreaming)
     {
         const double Now = FPlatformTime::Seconds();
         if (LastBroadcastTime > 0.0 && (Now - LastBroadcastTime) < 0.15)
@@ -1120,7 +1132,12 @@ bool FAIEditorAssistantChatController::ShouldDisplayConversationMessage(const FA
 
 bool FAIEditorAssistantChatController::CanSendRequest() const
 {
-    return GetActiveSession() != nullptr && !bIsSending && !bIsDetectingRole && !IsAwaitingToolConfirmation() && !IsGeneratingTitle();
+    const FAIEditorAssistantChatSession* Session = GetActiveSession();
+    return Session != nullptr
+        && !Session->bIsSending
+        && !Session->bIsDetectingRole
+        && !IsAwaitingToolConfirmation()
+        && !IsGeneratingTitle();
 }
 
 bool FAIEditorAssistantChatController::CanCancelWork() const
@@ -1131,7 +1148,7 @@ bool FAIEditorAssistantChatController::CanCancelWork() const
         return false;
     }
 
-    return bIsSending ||
+    return Session->bIsSending ||
         Session->bAwaitingToolConfirmation ||
         Session->PendingToolCalls.Num() > 0 ||
         Session->bAssistantMessageOpen;
@@ -1139,7 +1156,7 @@ bool FAIEditorAssistantChatController::CanCancelWork() const
 
 bool FAIEditorAssistantChatController::CanEditSessions() const
 {
-    return !bIsSending && !bIsDetectingRole && !IsAwaitingToolConfirmation() && !IsGeneratingTitle();
+    return !IsAwaitingToolConfirmation() && !IsGeneratingTitle();
 }
 
 bool FAIEditorAssistantChatController::IsAwaitingToolConfirmation() const
@@ -1577,23 +1594,33 @@ void FAIEditorAssistantChatController::AppendMessage(const FString& Role, const 
 {
     if (FAIEditorAssistantChatSession* Session = GetActiveSession())
     {
-        Session->ConversationMessages.Add({ Role, Text });
-        BroadcastStateChanged();
+        AppendMessage(*Session, Role, Text);
     }
+}
+
+void FAIEditorAssistantChatController::AppendMessage(FAIEditorAssistantChatSession& Session, const FString& Role, const FString& Text)
+{
+    Session.ConversationMessages.Add({ Role, Text });
+    BroadcastStateChanged();
 }
 
 void FAIEditorAssistantChatController::UpsertLastMessage(const FString& Role, const FString& Text)
 {
     if (FAIEditorAssistantChatSession* Session = GetActiveSession())
     {
-        if (Session->ConversationMessages.Num() > 0 && Session->ConversationMessages.Last().Role.Equals(Role, ESearchCase::IgnoreCase))
-        {
-            Session->ConversationMessages.Last().Content = Text;
-        }
-        else
-        {
-            Session->ConversationMessages.Add({ Role, Text });
-        }
+        UpsertLastMessage(*Session, Role, Text);
+    }
+}
+
+void FAIEditorAssistantChatController::UpsertLastMessage(FAIEditorAssistantChatSession& Session, const FString& Role, const FString& Text)
+{
+    if (Session.ConversationMessages.Num() > 0 && Session.ConversationMessages.Last().Role.Equals(Role, ESearchCase::IgnoreCase))
+    {
+        Session.ConversationMessages.Last().Content = Text;
+    }
+    else
+    {
+        Session.ConversationMessages.Add({ Role, Text });
     }
 }
 
@@ -1603,8 +1630,16 @@ void FAIEditorAssistantChatController::AddRequestMessage(const TSharedPtr<FJsonO
     {
         if (FAIEditorAssistantChatSession* Session = GetActiveSession())
         {
-            Session->RequestMessages.Add(MessageObject);
+            AddRequestMessage(*Session, MessageObject);
         }
+    }
+}
+
+void FAIEditorAssistantChatController::AddRequestMessage(FAIEditorAssistantChatSession& Session, const TSharedPtr<FJsonObject>& MessageObject)
+{
+    if (MessageObject.IsValid())
+    {
+        Session.RequestMessages.Add(MessageObject);
     }
 }
 
@@ -1621,6 +1656,14 @@ void FAIEditorAssistantChatController::TouchSession(FAIEditorAssistantChatSessio
 void FAIEditorAssistantChatController::PersistActiveSession()
 {
     if (FAIEditorAssistantChatSession* Session = GetActiveSession())
+    {
+        PersistSession(Session->SessionId);
+    }
+}
+
+void FAIEditorAssistantChatController::PersistSession(const FString& SessionId)
+{
+    if (FAIEditorAssistantChatSession* Session = FindSessionById(SessionId))
     {
         TouchSession(*Session);
         SessionStore->SaveSession(*Session);
@@ -1744,15 +1787,23 @@ bool FAIEditorAssistantChatController::ShouldGenerateTitle(const FAIEditorAssist
 void FAIEditorAssistantChatController::MaybeGenerateTitleForActiveSession()
 {
     FAIEditorAssistantChatSession* Session = GetActiveSession();
-    if (Session == nullptr || !ShouldGenerateTitle(*Session))
+    if (Session != nullptr)
+    {
+        MaybeGenerateTitle(*Session);
+    }
+}
+
+void FAIEditorAssistantChatController::MaybeGenerateTitle(FAIEditorAssistantChatSession& Session)
+{
+    if (!ShouldGenerateTitle(Session))
     {
         return;
     }
 
-    Session->Title = GenerateFallbackTitle(*Session);
-    Session->bHasGeneratedTitle = true;
-    TouchSession(*Session);
-    SessionStore->SaveSession(*Session);
+    Session.Title = GenerateFallbackTitle(Session);
+    Session.bHasGeneratedTitle = true;
+    TouchSession(Session);
+    SessionStore->SaveSession(Session);
     SaveSessionIndex();
     StatusMessage = TEXT("Response received. Session title was generated locally.");
     BroadcastStateChanged();
@@ -1762,50 +1813,65 @@ void FAIEditorAssistantChatController::StartAssistantResponse()
 {
     if (FAIEditorAssistantChatSession* Session = GetActiveSession())
     {
-        Session->bAssistantMessageOpen = true;
-        Session->StreamedResponseCache.Empty();
-        Session->StreamedReasoningCache.Empty();
-        Session->PendingResponseBuffer.Empty();
-        Session->StreamingToolCalls.Reset();
-        AppendMessage(TEXT("AI"), TEXT(""));
+        StartAssistantResponse(*Session);
     }
+}
+
+void FAIEditorAssistantChatController::StartAssistantResponse(FAIEditorAssistantChatSession& Session)
+{
+    Session.bAssistantMessageOpen = true;
+    Session.StreamedResponseCache.Empty();
+    Session.StreamedReasoningCache.Empty();
+    Session.PendingResponseBuffer.Empty();
+    Session.StreamingToolCalls.Reset();
+    AppendMessage(Session, TEXT("AI"), TEXT(""));
 }
 
 void FAIEditorAssistantChatController::FinalizeAssistantResponse()
 {
     if (FAIEditorAssistantChatSession* Session = GetActiveSession())
     {
-        if (!Session->bAssistantMessageOpen)
-        {
-            return;
-        }
-
-        Session->bAssistantMessageOpen = false;
-        UpsertLastMessage(TEXT("AI"), Session->StreamedResponseCache.IsEmpty() ? TEXT("(No content returned)") : Session->StreamedResponseCache);
+        FinalizeAssistantResponse(*Session);
     }
+}
+
+void FAIEditorAssistantChatController::FinalizeAssistantResponse(FAIEditorAssistantChatSession& Session)
+{
+    if (!Session.bAssistantMessageOpen)
+    {
+        return;
+    }
+
+    Session.bAssistantMessageOpen = false;
+    UpsertLastMessage(Session, TEXT("AI"), Session.StreamedResponseCache.IsEmpty() ? TEXT("(No content returned)") : Session.StreamedResponseCache);
 }
 
 void FAIEditorAssistantChatController::AbortAssistantResponse()
 {
     if (FAIEditorAssistantChatSession* Session = GetActiveSession())
     {
-        if (!Session->bAssistantMessageOpen)
-        {
-            return;
-        }
+        AbortAssistantResponse(*Session);
+    }
+}
 
-        Session->bAssistantMessageOpen = false;
-        Session->StreamedResponseCache.Empty();
-        Session->StreamedReasoningCache.Empty();
-        Session->PendingResponseBuffer.Empty();
+void FAIEditorAssistantChatController::AbortAssistantResponse(FAIEditorAssistantChatSession& Session)
+{
+    if (!Session.bAssistantMessageOpen)
+    {
+        return;
+    }
 
-        if (Session->ConversationMessages.Num() > 0 &&
-            Session->ConversationMessages.Last().Role.Equals(TEXT("AI"), ESearchCase::IgnoreCase) &&
-            Session->ConversationMessages.Last().Content.IsEmpty())
-        {
-            Session->ConversationMessages.Pop();
-            BroadcastStateChanged();
-        }
+    Session.bAssistantMessageOpen = false;
+    Session.StreamedResponseCache.Empty();
+    Session.StreamedReasoningCache.Empty();
+    Session.PendingResponseBuffer.Empty();
+
+    if (Session.ConversationMessages.Num() > 0 &&
+        Session.ConversationMessages.Last().Role.Equals(TEXT("AI"), ESearchCase::IgnoreCase) &&
+        Session.ConversationMessages.Last().Content.IsEmpty())
+    {
+        Session.ConversationMessages.Pop();
+        BroadcastStateChanged();
     }
 }
 
@@ -1813,28 +1879,38 @@ void FAIEditorAssistantChatController::ResetStreamingState()
 {
     if (FAIEditorAssistantChatSession* Session = GetActiveSession())
     {
-        Session->PendingResponseBuffer.Empty();
-        Session->StreamedResponseCache.Empty();
-        Session->StreamedReasoningCache.Empty();
-        Session->StreamingToolCalls.Reset();
+        ResetStreamingState(*Session);
     }
+}
+
+void FAIEditorAssistantChatController::ResetStreamingState(FAIEditorAssistantChatSession& Session)
+{
+    Session.PendingResponseBuffer.Empty();
+    Session.StreamedResponseCache.Empty();
+    Session.StreamedReasoningCache.Empty();
+    Session.StreamingToolCalls.Reset();
 }
 
 void FAIEditorAssistantChatController::BeginUserTurn(const FString& UserDisplayText, const TSharedPtr<FJsonObject>& UserMessageObject)
 {
     if (FAIEditorAssistantChatSession* Session = GetActiveSession())
     {
-        Session->CurrentToolRound = 0;
-        Session->PendingToolCalls.Reset();
-        Session->PendingToolCallIndex = INDEX_NONE;
-        Session->bAwaitingToolConfirmation = false;
-        Session->PendingUserPrompt = UserDisplayText;
-        Session->DraftPrompt.Empty();
-
-        AppendMessage(TEXT("You"), UserDisplayText);
-        AddRequestMessage(UserMessageObject);
-        PersistActiveSession();
+        BeginUserTurn(*Session, UserDisplayText, UserMessageObject);
     }
+}
+
+void FAIEditorAssistantChatController::BeginUserTurn(FAIEditorAssistantChatSession& Session, const FString& UserDisplayText, const TSharedPtr<FJsonObject>& UserMessageObject)
+{
+    Session.CurrentToolRound = 0;
+    Session.PendingToolCalls.Reset();
+    Session.PendingToolCallIndex = INDEX_NONE;
+    Session.bAwaitingToolConfirmation = false;
+    Session.PendingUserPrompt = UserDisplayText;
+    Session.DraftPrompt.Empty();
+
+    AppendMessage(Session, TEXT("You"), UserDisplayText);
+    AddRequestMessage(Session, UserMessageObject);
+    PersistSession(Session.SessionId);
 }
 
 bool FAIEditorAssistantChatController::SendChatRequest()
@@ -1844,53 +1920,59 @@ bool FAIEditorAssistantChatController::SendChatRequest()
     {
         return false;
     }
+    return SendChatRequest(*Session);
+}
 
+bool FAIEditorAssistantChatController::SendChatRequest(FAIEditorAssistantChatSession& Session)
+{
     FString SettingsError;
     FAIEditorAssistantChatServiceSettings Settings;
     if (!ResolveServiceSettings(Settings, SettingsError))
     {
-        FinishTurnWithError(SettingsError);
+        FinishTurnWithError(Session, SettingsError);
         return false;
     }
 
     FAIEditorAssistantChatCompletionRequest Request;
     Request.bStream = true;
-    Request.Messages = BuildRequestMessages();
-    Request.Tools = BuildToolDefinitions();
+    Request.Messages = BuildRequestMessages(Session);
+    Request.Tools = BuildToolDefinitions(Session);
     Request.ToolChoice = Request.Tools.Num() > 0 ? TEXT("auto") : FString();
 
-    ResetStreamingState();
-    bIsSending = true;
-    const int32 RequestSerial = ++NextRequestSerial;
-    ActiveRequestSerial = RequestSerial;
-    StartAssistantResponse();
-    StatusMessage = Session->CurrentToolRound == 0
+    ResetStreamingState(Session);
+    Session.bIsSending = true;
+    const int32 RequestSerial = ++Session.NextRequestSerial;
+    Session.ActiveRequestSerial = RequestSerial;
+    StartAssistantResponse(Session);
+    StatusMessage = Session.CurrentToolRound == 0
         ? TEXT("Sending request with native UE tools enabled...")
         : TEXT("Continuing the tool loop...");
     BroadcastStateChanged();
 
+    const FString SessionId = Session.SessionId;
     const TWeakPtr<FAIEditorAssistantChatController> WeakController = AsShared();
     if (!ChatService->SendStreamingChatRequest(
             Settings,
             Request,
-            [WeakController, RequestSerial](const FString& ChunkText)
+            [WeakController, SessionId, RequestSerial](const FString& ChunkText)
             {
                 if (const TSharedPtr<FAIEditorAssistantChatController> Pinned = WeakController.Pin())
                 {
-                    Pinned->HandleStreamingPayloadChunk(RequestSerial, ChunkText);
+                    Pinned->HandleStreamingPayloadChunk(SessionId, RequestSerial, ChunkText);
                 }
             },
-            [WeakController, RequestSerial](const FAIEditorAssistantChatServiceResponse& Response)
+            [WeakController, SessionId, RequestSerial](const FAIEditorAssistantChatServiceResponse& Response)
             {
                 if (const TSharedPtr<FAIEditorAssistantChatController> Pinned = WeakController.Pin())
                 {
-                    Pinned->HandleChatResponse(RequestSerial, Response);
+                    Pinned->HandleChatResponse(SessionId, RequestSerial, Response);
                 }
-            }))
+            },
+            SessionId))
     {
-        ActiveRequestSerial = 0;
-        bIsSending = false;
-        AbortAssistantResponse();
+        Session.ActiveRequestSerial = 0;
+        Session.bIsSending = false;
+        AbortAssistantResponse(Session);
         BroadcastStateChanged();
         return false;
     }
@@ -1905,17 +1987,21 @@ void FAIEditorAssistantChatController::ExecuteNextPendingToolCall()
     {
         return;
     }
+    ExecuteNextPendingToolCall(*Session);
+}
 
-    if (!Session->PendingToolCalls.IsValidIndex(Session->PendingToolCallIndex))
+void FAIEditorAssistantChatController::ExecuteNextPendingToolCall(FAIEditorAssistantChatSession& Session)
+{
+    if (!Session.PendingToolCalls.IsValidIndex(Session.PendingToolCallIndex))
     {
-        Session->PendingToolCalls.Reset();
-        Session->PendingToolCallIndex = INDEX_NONE;
-        Session->bAwaitingToolConfirmation = false;
+        Session.PendingToolCalls.Reset();
+        Session.PendingToolCallIndex = INDEX_NONE;
+        Session.bAwaitingToolConfirmation = false;
 
         const int32 ConfiguredMaxToolRounds = GetConfiguredMaxToolRounds();
-        if (Session->CurrentToolRound + 1 >= ConfiguredMaxToolRounds)
+        if (Session.CurrentToolRound + 1 >= ConfiguredMaxToolRounds)
         {
-            FinishTurnWithError(
+            FinishTurnWithError(Session,
                 FString::Printf(
                     TEXT("Stopped after the maximum number of tool rounds. The model did not finish within %d tool loops."),
                     ConfiguredMaxToolRounds),
@@ -1923,37 +2009,37 @@ void FAIEditorAssistantChatController::ExecuteNextPendingToolCall()
             return;
         }
 
-        ++Session->CurrentToolRound;
-        if (!SendChatRequest())
+        ++Session.CurrentToolRound;
+        if (!SendChatRequest(Session))
         {
-            FinishTurnWithError(TEXT("Failed to continue the tool loop."));
+            FinishTurnWithError(Session, TEXT("Failed to continue the tool loop."));
         }
         return;
     }
 
-    const FAIEditorAssistantPendingToolCall& ToolCall = Session->PendingToolCalls[Session->PendingToolCallIndex];
+    const FAIEditorAssistantPendingToolCall& ToolCall = Session.PendingToolCalls[Session.PendingToolCallIndex];
     const FAIEditorAssistantToolDefinition* Definition = FAIEditorAssistantToolRuntime::Get().FindDefinition(ToolCall.Name);
     if (Definition == nullptr)
     {
         const FAIEditorAssistantToolResult Result = FAIEditorAssistantToolResult::Error(FString::Printf(TEXT("Unknown tool '%s'."), *ToolCall.Name));
-        AddRequestMessage(BuildToolResultMessageObject(ToolCall.Id, ToolCall.Name, Result.ToMessageContent()));
-        AppendToolResultMessage(ToolCall, Result);
-        PersistActiveSession();
-        ++Session->PendingToolCallIndex;
-        ExecuteNextPendingToolCall();
+        AddRequestMessage(Session, BuildToolResultMessageObject(ToolCall.Id, ToolCall.Name, Result.ToMessageContent()));
+        AppendToolResultMessage(Session, ToolCall, Result);
+        PersistSession(Session.SessionId);
+        ++Session.PendingToolCallIndex;
+        ExecuteNextPendingToolCall(Session);
         return;
     }
 
     if (Definition->ConfirmationPolicy == EAIEditorAssistantToolConfirmationPolicy::ExplicitApproval)
     {
-        Session->bAwaitingToolConfirmation = true;
+        Session.bAwaitingToolConfirmation = true;
         StatusMessage = TEXT("Waiting for your approval before executing the requested tool.");
-        PersistActiveSession();
+        PersistSession(Session.SessionId);
         BroadcastStateChanged();
         return;
     }
 
-    ExecuteCurrentPendingToolCall(true);
+    ExecuteCurrentPendingToolCall(Session, true);
 }
 
 void FAIEditorAssistantChatController::ExecuteCurrentPendingToolCall(bool bApproved)
@@ -1963,20 +2049,29 @@ void FAIEditorAssistantChatController::ExecuteCurrentPendingToolCall(bool bAppro
     {
         return;
     }
+    ExecuteCurrentPendingToolCall(*Session, bApproved);
+}
 
-    const FAIEditorAssistantPendingToolCall ToolCall = Session->PendingToolCalls[Session->PendingToolCallIndex];
+void FAIEditorAssistantChatController::ExecuteCurrentPendingToolCall(FAIEditorAssistantChatSession& Session, bool bApproved)
+{
+    if (!Session.PendingToolCalls.IsValidIndex(Session.PendingToolCallIndex))
+    {
+        return;
+    }
+
+    const FAIEditorAssistantPendingToolCall ToolCall = Session.PendingToolCalls[Session.PendingToolCallIndex];
     const FAIEditorAssistantToolResult Result = bApproved
         ? FAIEditorAssistantToolRuntime::Get().ExecuteTool(ToolCall.Name, ToolCall.Arguments.IsValid() ? ToolCall.Arguments : MakeShared<FJsonObject>())
         : FAIEditorAssistantToolResult::Rejected(TEXT("The user rejected this tool call."));
 
-    AddRequestMessage(BuildToolResultMessageObject(ToolCall.Id, ToolCall.Name, Result.ToMessageContent()));
-    AppendToolResultMessage(ToolCall, Result);
+    AddRequestMessage(Session, BuildToolResultMessageObject(ToolCall.Id, ToolCall.Name, Result.ToMessageContent()));
+    AppendToolResultMessage(Session, ToolCall, Result);
     StatusMessage = Result.Summary;
-    PersistActiveSession();
+    PersistSession(Session.SessionId);
     BroadcastStateChanged();
 
-    ++Session->PendingToolCallIndex;
-    ExecuteNextPendingToolCall();
+    ++Session.PendingToolCallIndex;
+    ExecuteNextPendingToolCall(Session);
 }
 
 void FAIEditorAssistantChatController::ResumeAfterToolConfirmation(bool bApproved)
@@ -1998,47 +2093,63 @@ void FAIEditorAssistantChatController::ResumeAfterToolConfirmation(bool bApprove
 
 void FAIEditorAssistantChatController::FinishTurnWithError(const FString& ErrorMessage, bool bKeepAssistantPlaceholder)
 {
-    bIsSending = false;
-
     if (FAIEditorAssistantChatSession* Session = GetActiveSession())
     {
-        Session->bAwaitingToolConfirmation = false;
-        Session->PendingToolCalls.Reset();
-        Session->PendingToolCallIndex = INDEX_NONE;
-        Session->StreamingToolCalls.Reset();
-        Session->CurrentToolRound = 0;
+        FinishTurnWithError(*Session, ErrorMessage, bKeepAssistantPlaceholder);
+    }
+}
 
-        if (!bKeepAssistantPlaceholder)
-        {
-            AbortAssistantResponse();
-        }
+void FAIEditorAssistantChatController::FinishTurnWithError(FAIEditorAssistantChatSession& Session, const FString& ErrorMessage, bool bKeepAssistantPlaceholder)
+{
+    Session.bIsSending = false;
+    Session.bIsDetectingRole = false;
+
+    Session.bAwaitingToolConfirmation = false;
+    Session.PendingToolCalls.Reset();
+    Session.PendingToolCallIndex = INDEX_NONE;
+    Session.StreamingToolCalls.Reset();
+    Session.CurrentToolRound = 0;
+
+    if (!bKeepAssistantPlaceholder)
+    {
+        AbortAssistantResponse(Session);
     }
 
     StatusMessage = ErrorMessage;
-    AppendMessage(TEXT("System"), ErrorMessage);
-    PersistActiveSession();
+    AppendMessage(Session, TEXT("System"), ErrorMessage);
+    PersistSession(Session.SessionId);
     BroadcastStateChanged();
 }
 
 void FAIEditorAssistantChatController::HandleChatResponse(int32 RequestSerial, const FAIEditorAssistantChatServiceResponse& Response)
 {
-    if (RequestSerial != ActiveRequestSerial)
-    {
-        return;
-    }
-
-    ActiveRequestSerial = 0;
-    bIsSending = false;
-
     FAIEditorAssistantChatSession* Session = GetActiveSession();
     if (Session == nullptr)
     {
         return;
     }
+    HandleChatResponse(Session->SessionId, RequestSerial, Response);
+}
+
+void FAIEditorAssistantChatController::HandleChatResponse(const FString& SessionId, int32 RequestSerial, const FAIEditorAssistantChatServiceResponse& Response)
+{
+    FAIEditorAssistantChatSession* Session = FindSessionById(SessionId);
+    if (Session == nullptr)
+    {
+        return;
+    }
+
+    if (RequestSerial != Session->ActiveRequestSerial)
+    {
+        return;
+    }
+
+    Session->ActiveRequestSerial = 0;
+    Session->bIsSending = false;
 
     if (!Response.bRequestSucceeded)
     {
-        FinishTurnWithError(TEXT("Request failed before a valid response was received. Check the URL, key, and network connection."));
+        FinishTurnWithError(*Session, TEXT("Request failed before a valid response was received. Check the URL, key, and network connection."));
         return;
     }
 
@@ -2051,7 +2162,7 @@ void FAIEditorAssistantChatController::HandleChatResponse(int32 RequestSerial, c
             ErrorMessage = FString::Printf(TEXT("%s %s"), *ErrorMessage, *ServiceMessage);
         }
 
-        FinishTurnWithError(ErrorMessage);
+        FinishTurnWithError(*Session, ErrorMessage);
         return;
     }
 
@@ -2097,29 +2208,29 @@ void FAIEditorAssistantChatController::HandleChatResponse(int32 RequestSerial, c
     {
         if (!ParsedAssistantContent.IsEmpty())
         {
-            FinalizeAssistantResponse();
+            FinalizeAssistantResponse(*Session);
         }
         else
         {
-            AbortAssistantResponse();
+            AbortAssistantResponse(*Session);
         }
 
-        AddRequestMessage(BuildAssistantMessageObject(ParsedAssistantContent, ParsedReasoningContent, ParsedToolCalls, ParsedProviderPayload));
-        AppendToolCallMessages(ParsedToolCalls);
+        AddRequestMessage(*Session, BuildAssistantMessageObject(*Session, ParsedAssistantContent, ParsedReasoningContent, ParsedToolCalls, ParsedProviderPayload));
+        AppendToolCallMessages(*Session, ParsedToolCalls);
         Session->PendingToolCalls = ParsedToolCalls;
         Session->PendingToolCallIndex = 0;
-        PersistActiveSession();
+        PersistSession(SessionId);
         BroadcastStateChanged();
-        ExecuteNextPendingToolCall();
+        ExecuteNextPendingToolCall(*Session);
         return;
     }
 
     if (!ParsedAssistantContent.IsEmpty())
     {
-        FinalizeAssistantResponse();
-        AddRequestMessage(BuildAssistantMessageObject(ParsedAssistantContent, ParsedReasoningContent, {}, ParsedProviderPayload));
-        PersistActiveSession();
-        MaybeGenerateTitleForActiveSession();
+        FinalizeAssistantResponse(*Session);
+        AddRequestMessage(*Session, BuildAssistantMessageObject(*Session, ParsedAssistantContent, ParsedReasoningContent, {}, ParsedProviderPayload));
+        PersistSession(SessionId);
+        MaybeGenerateTitle(*Session);
 
         if (!IsGeneratingTitle())
         {
@@ -2129,7 +2240,7 @@ void FAIEditorAssistantChatController::HandleChatResponse(int32 RequestSerial, c
         return;
     }
 
-    FinishTurnWithError(
+    FinishTurnWithError(*Session,
         bHadChoices
             ? TEXT("The provider returned a completion with no assistant text and no tool calls. Make sure your provider supports OpenAI-style tool calling.")
             : TEXT("The response did not contain a usable assistant message or tool call payload."));
@@ -2137,13 +2248,23 @@ void FAIEditorAssistantChatController::HandleChatResponse(int32 RequestSerial, c
 
 void FAIEditorAssistantChatController::HandleStreamingPayloadChunk(int32 RequestSerial, const FString& ChunkText)
 {
-    if (RequestSerial != ActiveRequestSerial)
+    FAIEditorAssistantChatSession* Session = GetActiveSession();
+    if (Session == nullptr)
+    {
+        return;
+    }
+    HandleStreamingPayloadChunk(Session->SessionId, RequestSerial, ChunkText);
+}
+
+void FAIEditorAssistantChatController::HandleStreamingPayloadChunk(const FString& SessionId, int32 RequestSerial, const FString& ChunkText)
+{
+    FAIEditorAssistantChatSession* Session = FindSessionById(SessionId);
+    if (Session == nullptr)
     {
         return;
     }
 
-    FAIEditorAssistantChatSession* Session = GetActiveSession();
-    if (Session == nullptr)
+    if (RequestSerial != Session->ActiveRequestSerial)
     {
         return;
     }
@@ -2159,11 +2280,21 @@ void FAIEditorAssistantChatController::HandleStreamingPayloadChunk(int32 Request
 
     for (const FString& Line : Lines)
     {
-        HandleStreamingLine(Line.TrimStartAndEnd());
+        HandleStreamingLine(*Session, Line.TrimStartAndEnd());
     }
 }
 
 bool FAIEditorAssistantChatController::HandleStreamingLine(const FString& LineText)
+{
+    FAIEditorAssistantChatSession* Session = GetActiveSession();
+    if (Session == nullptr)
+    {
+        return false;
+    }
+    return HandleStreamingLine(*Session, LineText);
+}
+
+bool FAIEditorAssistantChatController::HandleStreamingLine(FAIEditorAssistantChatSession& Session, const FString& LineText)
 {
     if (!LineText.StartsWith(TEXT("data:")))
     {
@@ -2186,22 +2317,16 @@ bool FAIEditorAssistantChatController::HandleStreamingLine(const FString& LineTe
     FString ReasoningContentDelta;
     if (TryExtractReasoningContentDelta(ResponseObject, ReasoningContentDelta))
     {
-        if (FAIEditorAssistantChatSession* Session = GetActiveSession())
-        {
-            Session->StreamedReasoningCache.Append(ReasoningContentDelta);
-        }
+        Session.StreamedReasoningCache.Append(ReasoningContentDelta);
     }
 
     FString OutputTextDelta;
     if (TryExtractOutputTextDelta(ResponseObject, OutputTextDelta))
     {
-        if (FAIEditorAssistantChatSession* Session = GetActiveSession())
-        {
-            Session->StreamedResponseCache.Append(OutputTextDelta);
-            UpsertLastMessage(TEXT("AI"), Session->StreamedResponseCache);
-            StatusMessage = TEXT("Receiving streamed response...");
-            BroadcastStateChanged();
-        }
+        Session.StreamedResponseCache.Append(OutputTextDelta);
+        UpsertLastMessage(Session, TEXT("AI"), Session.StreamedResponseCache);
+        StatusMessage = TEXT("Receiving streamed response...");
+        BroadcastStateChanged();
         return true;
     }
 
@@ -2217,8 +2342,8 @@ bool FAIEditorAssistantChatController::HandleStreamingLine(const FString& LineTe
         return false;
     }
 
-    const bool bHandledAssistantDelta = TryAppendAssistantDelta(*ChoiceObject);
-    const bool bHandledToolCallDelta = TryAppendToolCallDelta(*ChoiceObject);
+    const bool bHandledAssistantDelta = TryAppendAssistantDelta(Session, *ChoiceObject);
+    const bool bHandledToolCallDelta = TryAppendToolCallDelta(Session, *ChoiceObject);
     return bHandledAssistantDelta || bHandledToolCallDelta;
 }
 
@@ -2229,7 +2354,11 @@ bool FAIEditorAssistantChatController::TryAppendAssistantDelta(const TSharedPtr<
     {
         return false;
     }
+    return TryAppendAssistantDelta(*Session, ChoiceObject);
+}
 
+bool FAIEditorAssistantChatController::TryAppendAssistantDelta(FAIEditorAssistantChatSession& Session, const TSharedPtr<FJsonObject>& ChoiceObject)
+{
     const TSharedPtr<FJsonObject>* DeltaObject = nullptr;
     if (!ChoiceObject->TryGetObjectField(TEXT("delta"), DeltaObject) || DeltaObject == nullptr || !(*DeltaObject).IsValid())
     {
@@ -2239,7 +2368,7 @@ bool FAIEditorAssistantChatController::TryAppendAssistantDelta(const TSharedPtr<
     FString ReasoningDelta;
     if ((*DeltaObject)->TryGetStringField(TEXT("reasoning_content"), ReasoningDelta) && !ReasoningDelta.IsEmpty())
     {
-        Session->StreamedReasoningCache.Append(ReasoningDelta);
+        Session.StreamedReasoningCache.Append(ReasoningDelta);
     }
 
     FString DeltaContent;
@@ -2285,8 +2414,8 @@ bool FAIEditorAssistantChatController::TryAppendAssistantDelta(const TSharedPtr<
         return false;
     }
 
-    Session->StreamedResponseCache.Append(DeltaContent);
-    UpsertLastMessage(TEXT("AI"), Session->StreamedResponseCache);
+    Session.StreamedResponseCache.Append(DeltaContent);
+    UpsertLastMessage(Session, TEXT("AI"), Session.StreamedResponseCache);
     StatusMessage = TEXT("Receiving streamed response...");
     BroadcastStateChanged();
     return true;
@@ -2299,6 +2428,11 @@ bool FAIEditorAssistantChatController::TryAppendToolCallDelta(const TSharedPtr<F
     {
         return false;
     }
+    return TryAppendToolCallDelta(*Session, ChoiceObject);
+}
+
+bool FAIEditorAssistantChatController::TryAppendToolCallDelta(FAIEditorAssistantChatSession& Session, const TSharedPtr<FJsonObject>& ChoiceObject)
+{
 
     const TSharedPtr<FJsonObject>* DeltaObject = nullptr;
     if (!ChoiceObject->TryGetObjectField(TEXT("delta"), DeltaObject) || DeltaObject == nullptr || !(*DeltaObject).IsValid())
@@ -2324,12 +2458,12 @@ bool FAIEditorAssistantChatController::TryAppendToolCallDelta(const TSharedPtr<F
         int32 ToolCallIndex = ArrayIndex;
         (*ToolCallObject)->TryGetNumberField(TEXT("index"), ToolCallIndex);
 
-        while (Session->StreamingToolCalls.Num() <= ToolCallIndex)
+        while (Session.StreamingToolCalls.Num() <= ToolCallIndex)
         {
-            Session->StreamingToolCalls.AddDefaulted();
+            Session.StreamingToolCalls.AddDefaulted();
         }
 
-        FAIEditorAssistantStreamingToolCall& StreamingToolCall = Session->StreamingToolCalls[ToolCallIndex];
+        FAIEditorAssistantStreamingToolCall& StreamingToolCall = Session.StreamingToolCalls[ToolCallIndex];
         (*ToolCallObject)->TryGetStringField(TEXT("id"), StreamingToolCall.Id);
 
         const TSharedPtr<FJsonObject>* FunctionObject = nullptr;
@@ -2471,14 +2605,19 @@ TSharedPtr<FJsonObject> FAIEditorAssistantChatController::BuildUserMessageObject
 
 TSharedPtr<FJsonObject> FAIEditorAssistantChatController::BuildAssistantMessageObject(const FString& AssistantContent, const FString& ReasoningContent, const TArray<FAIEditorAssistantPendingToolCall>& ToolCalls, const TSharedPtr<FJsonObject>& ProviderPayload) const
 {
+    const FAIEditorAssistantChatSession* Session = GetActiveSession();
+    return BuildAssistantMessageObject(Session != nullptr ? *Session : FAIEditorAssistantChatSession(), AssistantContent, ReasoningContent, ToolCalls, ProviderPayload);
+}
+
+TSharedPtr<FJsonObject> FAIEditorAssistantChatController::BuildAssistantMessageObject(const FAIEditorAssistantChatSession& Session, const FString& AssistantContent, const FString& ReasoningContent, const TArray<FAIEditorAssistantPendingToolCall>& ToolCalls, const TSharedPtr<FJsonObject>& ProviderPayload) const
+{
     TSharedPtr<FJsonObject> MessageObject = MakeShared<FJsonObject>();
     MessageObject->SetStringField(TEXT("role"), TEXT("assistant"));
     MessageObject->SetStringField(TEXT("content"), AssistantContent);
 
     if (!ReasoningContent.IsEmpty())
     {
-        const FAIEditorAssistantChatSession* Session = GetActiveSession();
-        const bool bShouldPreserveReasoning = ToolCalls.Num() > 0 || (Session != nullptr && Session->CurrentToolRound > 0);
+        const bool bShouldPreserveReasoning = ToolCalls.Num() > 0 || Session.CurrentToolRound > 0;
         if (bShouldPreserveReasoning)
         {
             MessageObject->SetStringField(TEXT("reasoning_content"), ReasoningContent);
@@ -2527,52 +2666,67 @@ TSharedPtr<FJsonObject> FAIEditorAssistantChatController::BuildToolResultMessage
 
 TArray<TSharedPtr<FJsonValue>> FAIEditorAssistantChatController::BuildRequestMessages() const
 {
-    TArray<TSharedPtr<FJsonValue>> Messages;
-
-    FString ActiveRoleId;
     if (const FAIEditorAssistantChatSession* Session = GetActiveSession())
     {
-        ActiveRoleId = Session->AgentRoleId;
+        return BuildRequestMessages(*Session);
     }
-    Messages.Add(MakeShared<FJsonValueObject>(BuildAgentSystemMessageObject(ActiveRoleId)));
+    TArray<TSharedPtr<FJsonValue>> Messages;
+    Messages.Add(MakeShared<FJsonValueObject>(BuildAgentSystemMessageObject(FString())));
+    return Messages;
+}
 
-    if (const FAIEditorAssistantChatSession* Session = GetActiveSession())
+TArray<TSharedPtr<FJsonValue>> FAIEditorAssistantChatController::BuildRequestMessages(const FAIEditorAssistantChatSession& Session) const
+{
+    TArray<TSharedPtr<FJsonValue>> Messages;
+    Messages.Add(MakeShared<FJsonValueObject>(BuildAgentSystemMessageObject(Session.AgentRoleId)));
+
+    const TArray<TSharedPtr<FJsonObject>> ConsistentHistory = BuildConsistentRequestHistory(Session.RequestMessages);
+    for (const TSharedPtr<FJsonObject>& Message : ConsistentHistory)
     {
-        const TArray<TSharedPtr<FJsonObject>> ConsistentHistory = BuildConsistentRequestHistory(Session->RequestMessages);
-        for (const TSharedPtr<FJsonObject>& Message : ConsistentHistory)
-        {
-            Messages.Add(MakeShared<FJsonValueObject>(Message));
-        }
+        Messages.Add(MakeShared<FJsonValueObject>(Message));
     }
     return Messages;
 }
 
 TArray<TSharedPtr<FJsonValue>> FAIEditorAssistantChatController::BuildToolDefinitions() const
 {
-    TArray<TSharedPtr<FJsonValue>> Tools;
-
-    FString ActiveRoleId;
     if (const FAIEditorAssistantChatSession* Session = GetActiveSession())
     {
-        ActiveRoleId = Session->AgentRoleId;
+        return BuildToolDefinitions(*Session);
     }
-
+    TArray<TSharedPtr<FJsonValue>> Tools;
     const TArray<FAIEditorAssistantToolDefinition>& SourceDefinitions =
-        FAIEditorAssistantToolRuntime::Get().GetToolDefinitionsForRole(ActiveRoleId);
-
+        FAIEditorAssistantToolRuntime::Get().GetToolDefinitionsForRole(FString());
     for (const FAIEditorAssistantToolDefinition& Definition : SourceDefinitions)
     {
         TSharedPtr<FJsonObject> FunctionObject = MakeShared<FJsonObject>();
         FunctionObject->SetStringField(TEXT("name"), Definition.Name);
         FunctionObject->SetStringField(TEXT("description"), Definition.Description);
         FunctionObject->SetObjectField(TEXT("parameters"), Definition.Parameters.IsValid() ? Definition.Parameters : MakeShared<FJsonObject>());
-
         TSharedPtr<FJsonObject> ToolObject = MakeShared<FJsonObject>();
         ToolObject->SetStringField(TEXT("type"), TEXT("function"));
         ToolObject->SetObjectField(TEXT("function"), FunctionObject);
         Tools.Add(MakeShared<FJsonValueObject>(ToolObject));
     }
+    return Tools;
+}
 
+TArray<TSharedPtr<FJsonValue>> FAIEditorAssistantChatController::BuildToolDefinitions(const FAIEditorAssistantChatSession& Session) const
+{
+    TArray<TSharedPtr<FJsonValue>> Tools;
+    const TArray<FAIEditorAssistantToolDefinition>& SourceDefinitions =
+        FAIEditorAssistantToolRuntime::Get().GetToolDefinitionsForRole(Session.AgentRoleId);
+    for (const FAIEditorAssistantToolDefinition& Definition : SourceDefinitions)
+    {
+        TSharedPtr<FJsonObject> FunctionObject = MakeShared<FJsonObject>();
+        FunctionObject->SetStringField(TEXT("name"), Definition.Name);
+        FunctionObject->SetStringField(TEXT("description"), Definition.Description);
+        FunctionObject->SetObjectField(TEXT("parameters"), Definition.Parameters.IsValid() ? Definition.Parameters : MakeShared<FJsonObject>());
+        TSharedPtr<FJsonObject> ToolObject = MakeShared<FJsonObject>();
+        ToolObject->SetStringField(TEXT("type"), TEXT("function"));
+        ToolObject->SetObjectField(TEXT("function"), FunctionObject);
+        Tools.Add(MakeShared<FJsonValueObject>(ToolObject));
+    }
     return Tools;
 }
 
@@ -2624,15 +2778,22 @@ FString FAIEditorAssistantChatController::FormatToolArgumentsSummary(const FAIEd
 
 void FAIEditorAssistantChatController::AppendToolCallMessages(const TArray<FAIEditorAssistantPendingToolCall>& ToolCalls)
 {
+    if (FAIEditorAssistantChatSession* Session = GetActiveSession())
+    {
+        AppendToolCallMessages(*Session, ToolCalls);
+    }
+}
+
+void FAIEditorAssistantChatController::AppendToolCallMessages(FAIEditorAssistantChatSession& Session, const TArray<FAIEditorAssistantPendingToolCall>& ToolCalls)
+{
     for (const FAIEditorAssistantPendingToolCall& ToolCall : ToolCalls)
     {
         const FString ToolText = FString::Printf(TEXT("Requested `%s` with arguments:\n```json\n%s\n```\n"),
             *ToolCall.Name, *FormatToolArgumentsSummary(ToolCall));
 
-        FAIEditorAssistantChatSession* Session = GetActiveSession();
-        if (Session != nullptr && Session->ConversationMessages.Num() > 0)
+        if (Session.ConversationMessages.Num() > 0)
         {
-            FAIEditorAssistantChatMessage& LastMessage = Session->ConversationMessages.Last();
+            FAIEditorAssistantChatMessage& LastMessage = Session.ConversationMessages.Last();
             if (LastMessage.Role.Equals(TEXT("AI"), ESearchCase::IgnoreCase) && LastMessage.ToolActivityContent.IsEmpty())
             {
                 LastMessage.ToolActivityContent = TEXT("> Tool Activity\n\n");
@@ -2647,20 +2808,22 @@ void FAIEditorAssistantChatController::AppendToolCallMessages(const TArray<FAIEd
 
 void FAIEditorAssistantChatController::AppendToolResultMessage(const FAIEditorAssistantPendingToolCall& ToolCall, const FAIEditorAssistantToolResult& Result)
 {
+    if (FAIEditorAssistantChatSession* Session = GetActiveSession())
+    {
+        AppendToolResultMessage(*Session, ToolCall, Result);
+    }
+}
+
+void FAIEditorAssistantChatController::AppendToolResultMessage(FAIEditorAssistantChatSession& Session, const FAIEditorAssistantPendingToolCall& ToolCall, const FAIEditorAssistantToolResult& Result)
+{
     const FString StatusText = Result.bSuccess ? TEXT("Success") : (Result.bWasRejected ? TEXT("Rejected") : TEXT("Error"));
     const FString ResultText = FString::Printf(TEXT("`%s` → %s: %s\n\n"), *ToolCall.Name, *StatusText, *Result.Summary);
 
-    FAIEditorAssistantChatSession* Session = GetActiveSession();
-    if (Session == nullptr)
+    for (int32 Index = Session.ConversationMessages.Num() - 1; Index >= 0; --Index)
     {
-        return;
-    }
-
-    for (int32 Index = Session->ConversationMessages.Num() - 1; Index >= 0; --Index)
-    {
-        if (Session->ConversationMessages[Index].Role.Equals(TEXT("AI"), ESearchCase::IgnoreCase))
+        if (Session.ConversationMessages[Index].Role.Equals(TEXT("AI"), ESearchCase::IgnoreCase))
         {
-            Session->ConversationMessages[Index].ToolActivityContent.Append(ResultText);
+            Session.ConversationMessages[Index].ToolActivityContent.Append(ResultText);
             break;
         }
     }
@@ -2695,5 +2858,6 @@ FString FAIEditorAssistantChatController::GetSendButtonText() const
         return TEXT("Generating Title...");
     }
 
-    return bIsSending ? TEXT("Streaming...") : TEXT("Send");
+    const FAIEditorAssistantChatSession* Session = GetActiveSession();
+    return (Session != nullptr && Session->bIsSending) ? TEXT("Streaming...") : TEXT("Send");
 }

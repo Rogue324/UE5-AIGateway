@@ -64,10 +64,14 @@ private:
     FString BuildContextSummary(const FAIEditorAssistantChatSession& Session) const;
 
     void AppendMessage(const FString& Role, const FString& Text);
+    void AppendMessage(FAIEditorAssistantChatSession& Session, const FString& Role, const FString& Text);
     void UpsertLastMessage(const FString& Role, const FString& Text);
+    void UpsertLastMessage(FAIEditorAssistantChatSession& Session, const FString& Role, const FString& Text);
     void AddRequestMessage(const TSharedPtr<FJsonObject>& MessageObject);
+    void AddRequestMessage(FAIEditorAssistantChatSession& Session, const TSharedPtr<FJsonObject>& MessageObject);
     void TouchSession(FAIEditorAssistantChatSession& Session);
     void PersistActiveSession();
+    void PersistSession(const FString& SessionId);
     void SaveSessionIndex() const;
 
     void LoadSessions();
@@ -77,24 +81,39 @@ private:
     FString GenerateFallbackTitle(const FAIEditorAssistantChatSession& Session) const;
     bool ShouldGenerateTitle(const FAIEditorAssistantChatSession& Session) const;
     void MaybeGenerateTitleForActiveSession();
+    void MaybeGenerateTitle(FAIEditorAssistantChatSession& Session);
 
     void StartAssistantResponse();
+    void StartAssistantResponse(FAIEditorAssistantChatSession& Session);
     void FinalizeAssistantResponse();
+    void FinalizeAssistantResponse(FAIEditorAssistantChatSession& Session);
     void AbortAssistantResponse();
+    void AbortAssistantResponse(FAIEditorAssistantChatSession& Session);
     void ResetStreamingState();
+    void ResetStreamingState(FAIEditorAssistantChatSession& Session);
     void BeginUserTurn(const FString& UserDisplayText, const TSharedPtr<FJsonObject>& UserMessageObject);
+    void BeginUserTurn(FAIEditorAssistantChatSession& Session, const FString& UserDisplayText, const TSharedPtr<FJsonObject>& UserMessageObject);
     void BeginRoleDetectionAndSend();
     bool SendChatRequest();
+    bool SendChatRequest(FAIEditorAssistantChatSession& Session);
     void ExecuteNextPendingToolCall();
+    void ExecuteNextPendingToolCall(FAIEditorAssistantChatSession& Session);
     void ExecuteCurrentPendingToolCall(bool bApproved);
+    void ExecuteCurrentPendingToolCall(FAIEditorAssistantChatSession& Session, bool bApproved);
     void ResumeAfterToolConfirmation(bool bApproved);
     void FinishTurnWithError(const FString& ErrorMessage, bool bKeepAssistantPlaceholder = false);
+    void FinishTurnWithError(FAIEditorAssistantChatSession& Session, const FString& ErrorMessage, bool bKeepAssistantPlaceholder = false);
 
     void HandleChatResponse(int32 RequestSerial, const FAIEditorAssistantChatServiceResponse& Response);
+    void HandleChatResponse(const FString& SessionId, int32 RequestSerial, const FAIEditorAssistantChatServiceResponse& Response);
     void HandleStreamingPayloadChunk(int32 RequestSerial, const FString& ChunkText);
+    void HandleStreamingPayloadChunk(const FString& SessionId, int32 RequestSerial, const FString& ChunkText);
     bool HandleStreamingLine(const FString& LineText);
+    bool HandleStreamingLine(FAIEditorAssistantChatSession& Session, const FString& LineText);
     bool TryAppendAssistantDelta(const TSharedPtr<FJsonObject>& ChoiceObject);
+    bool TryAppendAssistantDelta(FAIEditorAssistantChatSession& Session, const TSharedPtr<FJsonObject>& ChoiceObject);
     bool TryAppendToolCallDelta(const TSharedPtr<FJsonObject>& ChoiceObject);
+    bool TryAppendToolCallDelta(FAIEditorAssistantChatSession& Session, const TSharedPtr<FJsonObject>& ChoiceObject);
     bool ParseChatCompletionPayload(
         const FString& ResponseBody,
         FString& OutAssistantContent,
@@ -106,14 +125,19 @@ private:
 
     TSharedPtr<FJsonObject> BuildUserMessageObject(const FString& UserPrompt, FString& OutError) const;
     TSharedPtr<FJsonObject> BuildAssistantMessageObject(const FString& AssistantContent, const FString& ReasoningContent, const TArray<FAIEditorAssistantPendingToolCall>& ToolCalls, const TSharedPtr<FJsonObject>& ProviderPayload) const;
+    TSharedPtr<FJsonObject> BuildAssistantMessageObject(const FAIEditorAssistantChatSession& Session, const FString& AssistantContent, const FString& ReasoningContent, const TArray<FAIEditorAssistantPendingToolCall>& ToolCalls, const TSharedPtr<FJsonObject>& ProviderPayload) const;
     TSharedPtr<FJsonObject> BuildToolResultMessageObject(const FString& ToolCallId, const FString& ToolName, const FString& Content) const;
     TArray<TSharedPtr<FJsonValue>> BuildRequestMessages() const;
+    TArray<TSharedPtr<FJsonValue>> BuildRequestMessages(const FAIEditorAssistantChatSession& Session) const;
     TArray<TSharedPtr<FJsonValue>> BuildToolDefinitions() const;
+    TArray<TSharedPtr<FJsonValue>> BuildToolDefinitions(const FAIEditorAssistantChatSession& Session) const;
 
     FString ExtractErrorMessage(const FString& ResponseBody) const;
     FString FormatToolArgumentsSummary(const FAIEditorAssistantPendingToolCall& ToolCall) const;
     void AppendToolCallMessages(const TArray<FAIEditorAssistantPendingToolCall>& ToolCalls);
+    void AppendToolCallMessages(FAIEditorAssistantChatSession& Session, const TArray<FAIEditorAssistantPendingToolCall>& ToolCalls);
     void AppendToolResultMessage(const FAIEditorAssistantPendingToolCall& ToolCall, const FAIEditorAssistantToolResult& Result);
+    void AppendToolResultMessage(FAIEditorAssistantChatSession& Session, const FAIEditorAssistantPendingToolCall& ToolCall, const FAIEditorAssistantToolResult& Result);
     FString GetPendingToolApprovalPrompt() const;
     FString GetSendButtonText() const;
 
@@ -123,8 +147,6 @@ private:
     FString ActiveSessionId;
     FString CurrentModel;
     FString StatusMessage;
-    bool bIsSending = false;
-    bool bIsDetectingRole = false;
     bool bIsModelListLoading = false;
     bool bAllowManualModelInput = false;
     bool bIsReasoningOptionsLoading = false;
@@ -137,8 +159,6 @@ private:
     EAIEditorAssistantReasoningIntensity CurrentReasoningIntensity = EAIEditorAssistantReasoningIntensity::ProviderDefault;
     TArray<EAIEditorAssistantReasoningIntensity> CachedReasoningModeOptions;
     FString ReasoningOptionsStatus;
-    int32 NextRequestSerial = 0;
-    int32 ActiveRequestSerial = 0;
     FSimpleMulticastDelegate StateChangedDelegate;
     double LastBroadcastTime = 0.0;
 };

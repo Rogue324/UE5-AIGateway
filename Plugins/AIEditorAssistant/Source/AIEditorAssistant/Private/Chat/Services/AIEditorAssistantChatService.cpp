@@ -21,6 +21,7 @@ struct FAIEditorAssistantOpenAIChatService::FPendingServiceRequest
     bool bTreatProgressAsEventStream = true;
     bool bIsModelListRequest = false;
     bool bIsReasoningOptionsRequest = false;
+    FString OwnerId;
 };
 
 namespace
@@ -1474,9 +1475,10 @@ bool FAIEditorAssistantOpenAIChatService::SendStreamingChatRequest(
     const FAIEditorAssistantChatServiceSettings& Settings,
     const FAIEditorAssistantChatCompletionRequest& Request,
     FStreamChunkCallback&& OnStreamChunk,
-    FRequestCompleteCallback&& OnComplete)
+    FRequestCompleteCallback&& OnComplete,
+    const FString& OwnerId)
 {
-    return BeginRequest(Settings, Request, TEXT("application/json"), MoveTemp(OnStreamChunk), MoveTemp(OnComplete));
+    return BeginRequest(Settings, Request, TEXT("application/json"), MoveTemp(OnStreamChunk), MoveTemp(OnComplete), OwnerId);
 }
 
 bool FAIEditorAssistantOpenAIChatService::FetchAvailableModels(
@@ -1505,6 +1507,27 @@ void FAIEditorAssistantOpenAIChatService::CancelActiveRequests()
         {
             Context->HttpRequest->CancelRequest();
         }
+    }
+}
+
+void FAIEditorAssistantOpenAIChatService::CancelRequestsByOwner(const FString& OwnerId)
+{
+    TArray<TSharedPtr<FPendingServiceRequest>> RequestsToCancel;
+    for (const TSharedPtr<FPendingServiceRequest>& Context : ActiveRequests)
+    {
+        if (Context.IsValid() && Context->OwnerId.Equals(OwnerId))
+        {
+            RequestsToCancel.Add(Context);
+        }
+    }
+
+    for (const TSharedPtr<FPendingServiceRequest>& Context : RequestsToCancel)
+    {
+        if (Context.IsValid() && Context->HttpRequest.IsValid())
+        {
+            Context->HttpRequest->CancelRequest();
+        }
+        ActiveRequests.Remove(Context);
     }
 }
 
@@ -1592,7 +1615,8 @@ bool FAIEditorAssistantOpenAIChatService::BeginRequest(
     const FAIEditorAssistantChatCompletionRequest& Request,
     const FString& AcceptHeader,
     FStreamChunkCallback&& OnStreamChunk,
-    FRequestCompleteCallback&& OnComplete)
+    FRequestCompleteCallback&& OnComplete,
+    const FString& OwnerId)
 {
     FProviderRequestData RequestData;
     if (!BuildProviderRequestData(Settings, Request, RequestData))
@@ -1614,6 +1638,7 @@ bool FAIEditorAssistantOpenAIChatService::BeginRequest(
     Context->OnComplete = MoveTemp(OnComplete);
     Context->Provider = Settings.Provider;
     Context->bTreatProgressAsEventStream = RequestData.bTreatProgressAsEventStream;
+    Context->OwnerId = OwnerId;
     ActiveRequests.Add(Context);
 
     if (!HttpRequest->ProcessRequest())

@@ -209,6 +209,10 @@ namespace
         TEXT("</MarkdownInlineCode>"),
         TEXT("<MarkdownCodeBlock>"),
         TEXT("</MarkdownCodeBlock>"),
+        TEXT("<MarkdownBold>"),
+        TEXT("</MarkdownBold>"),
+        TEXT("<MarkdownItalic>"),
+        TEXT("</MarkdownItalic>"),
     };
 
         for (const TCHAR* Token : LegacyTokens)
@@ -238,6 +242,8 @@ namespace
         Output = ReplaceLegacyBrowserTags(Output);
         Output = ReplaceLegacyTagRange(Output, TEXT("MarkdownHeading"), TEXT("## "), TEXT(""));
         Output = ReplaceLegacyTagRange(Output, TEXT("MarkdownInlineCode"), TEXT("`"), TEXT("`"));
+        Output = ReplaceLegacyTagRange(Output, TEXT("MarkdownBold"), TEXT("**"), TEXT("**"));
+        Output = ReplaceLegacyTagRange(Output, TEXT("MarkdownItalic"), TEXT("*"), TEXT("*"));
         Output = StripResidualLegacyTags(Output);
 
         return Output;

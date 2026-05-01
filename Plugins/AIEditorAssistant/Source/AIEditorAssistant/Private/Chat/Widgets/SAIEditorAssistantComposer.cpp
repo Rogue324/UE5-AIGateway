@@ -24,7 +24,7 @@ void SAIEditorAssistantComposer::Construct(const FArguments& InArgs)
             SAssignNew(PromptTextBox, SMultiLineEditableTextBox)
             .OnTextChanged(this, &SAIEditorAssistantComposer::HandlePromptTextChanged)
             .OnKeyDownHandler(this, &SAIEditorAssistantComposer::HandlePromptKeyDown)
-            .HintText(FText::FromString(TEXT("Describe what you want the model to do in the editor...")))
+            .HintText(FText::GetEmpty())
         ]
 
         + SVerticalBox::Slot()

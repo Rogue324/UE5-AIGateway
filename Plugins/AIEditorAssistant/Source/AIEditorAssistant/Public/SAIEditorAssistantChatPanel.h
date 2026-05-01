@@ -28,11 +28,9 @@ private:
     TSharedPtr<SComboBox<TSharedPtr<FString>>> ModelComboBox;
     TSharedPtr<FString> SelectedModelOption;
     TSharedPtr<class SEditableTextBox> ModelManualTextBox;
-    TSharedPtr<class STextBlock> ModelListStatusTextBlock;
     TArray<TSharedPtr<FString>> ReasoningOptions;
     TSharedPtr<SComboBox<TSharedPtr<FString>>> ReasoningComboBox;
     TSharedPtr<FString> SelectedReasoningOption;
-    TSharedPtr<class STextBlock> ReasoningStatusTextBlock;
     TSharedPtr<class STextBlock> StatusTextBlock;
     TSharedPtr<class SAIEditorAssistantSessionTabBar> SessionTabBar;
     TSharedPtr<class SAIEditorAssistantConversationView> ConversationView;

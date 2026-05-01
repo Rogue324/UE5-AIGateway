@@ -186,6 +186,38 @@ FString FAIEditorAssistantMarkdownRichTextRenderer::RenderInlineMarkdown(const F
     {
         const TCHAR CurrentChar = NormalizedText[Index];
 
+        if (!bInInlineCode && bEnableStyleTags && CurrentChar == TEXT('<'))
+        {
+            int32 TagLen = 0;
+
+            if (NormalizedText.Mid(Index).StartsWith(TEXT("<MarkdownBold>")))
+            {
+                TagLen = 14;
+            }
+            else if (NormalizedText.Mid(Index).StartsWith(TEXT("<MarkdownItalic>")))
+            {
+                TagLen = 16;
+            }
+            else if (NormalizedText.Mid(Index).StartsWith(TEXT("<MarkdownInlineCode>")))
+            {
+                TagLen = 20;
+            }
+
+            if (TagLen > 0)
+            {
+                const int32 ContentStart = Index + TagLen;
+                const int32 CloseIdx = NormalizedText.Find(TEXT("</>"), ESearchCase::CaseSensitive, ESearchDir::FromStart, ContentStart);
+                if (CloseIdx != INDEX_NONE)
+                {
+                    Output.Append(NormalizedText.Mid(Index, TagLen));
+                    Output.Append(EscapeRichText(NormalizedText.Mid(ContentStart, CloseIdx - ContentStart)));
+                    Output.Append(TEXT("</>"));
+                    Index = CloseIdx + 3;
+                    continue;
+                }
+            }
+        }
+
         if (!bInInlineCode && Index + 1 < NormalizedText.Len() && NormalizedText[Index] == TEXT('*') && NormalizedText[Index + 1] == TEXT('*'))
         {
             if (bEnableStyleTags)

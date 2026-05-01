@@ -21,12 +21,11 @@ public:
     void Refresh(const FAIEditorAssistantChatPanelViewState& ViewState);
 
 private:
-    TSharedRef<SWidget> BuildSessionTabWidget(const FAIEditorAssistantSessionTabViewData& SessionData, bool bSessionsEditable);
+    TSharedRef<SWidget> BuildSessionTabWidget(const FAIEditorAssistantSessionTabViewData& SessionData);
     static FString TruncateWithEllipsis(const FString& InText, int32 MaxLength);
 
     FOnAIEditorAssistantNewSessionRequested OnNewSessionRequested;
     FOnAIEditorAssistantSessionSelected OnSessionSelected;
     FOnAIEditorAssistantSessionClosed OnSessionClosed;
     TSharedPtr<class SHorizontalBox> SessionTabsBox;
-    bool bCanEditSessions = true;
 };

@@ -54,6 +54,11 @@ struct FAIEditorAssistantChatSession
     bool bAssistantMessageOpen = false;
     bool bAwaitingToolConfirmation = false;
     bool bIsGeneratingTitle = false;
+
+    bool bIsSending = false;
+    bool bIsDetectingRole = false;
+    int32 ActiveRequestSerial = 0;
+    int32 NextRequestSerial = 0;
 };
 
 struct FAIEditorAssistantChatSessionIndex
@@ -67,6 +72,7 @@ struct FAIEditorAssistantSessionTabViewData
     FString SessionId;
     FString Title;
     bool bIsActive = false;
+    bool bIsStreaming = false;
 };
 
 struct FAIEditorAssistantToolConfirmationViewData

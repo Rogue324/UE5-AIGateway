@@ -169,28 +169,6 @@ void SAIEditorAssistantChatPanel::Construct(const FArguments& InArgs)
 
         + SVerticalBox::Slot()
         .AutoHeight()
-        .Padding(8.0f, 0.0f, 8.0f, 4.0f)
-        [
-            SNew(SHorizontalBox)
-
-            + SHorizontalBox::Slot()
-            .FillWidth(1.0f)
-            .Padding(0.0f, 0.0f, 8.0f, 0.0f)
-            [
-                SAssignNew(ModelListStatusTextBlock, STextBlock)
-                .AutoWrapText(true)
-            ]
-
-            + SHorizontalBox::Slot()
-            .FillWidth(1.0f)
-            [
-                SAssignNew(ReasoningStatusTextBlock, STextBlock)
-                .AutoWrapText(true)
-            ]
-        ]
-
-        + SVerticalBox::Slot()
-        .AutoHeight()
         .Padding(8.0f, 8.0f)
         [
             SNew(SSeparator)
@@ -373,11 +351,6 @@ void SAIEditorAssistantChatPanel::RefreshFromController()
         }
     }
 
-    if (ModelListStatusTextBlock.IsValid())
-    {
-        ModelListStatusTextBlock->SetText(FText::FromString(ViewState.ModelListStatus));
-    }
-
     ReasoningOptions.Reset();
     ReasoningOptions.Reserve(ViewState.ReasoningModeOptions.Num());
     SelectedReasoningOption.Reset();
@@ -416,11 +389,6 @@ void SAIEditorAssistantChatPanel::RefreshFromController()
         {
             ReasoningComboBox->ClearSelection();
         }
-    }
-
-    if (ReasoningStatusTextBlock.IsValid())
-    {
-        ReasoningStatusTextBlock->SetText(FText::FromString(ViewState.ReasoningOptionsStatus));
     }
 
     if (StatusTextBlock.IsValid())

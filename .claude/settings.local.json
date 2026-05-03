@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git *)",
+      "Bash(cp \"F:/OpenCode/UE5AIPlugin/UE5-AIGateway/Plugins/AIEditorAssistant/Source/AIEditorAssistant/Private/Chat/Widgets/SAIEditorAssistantMarkdownMessageBody.cpp\" \"E:/Ft/Plugins/AIEditorAssistant/Source/AIEditorAssistant/Private/Chat/Widgets/SAIEditorAssistantMarkdownMessageBody.cpp\")",
+      "Bash(cp \"F:/OpenCode/UE5AIPlugin/UE5-AIGateway/Plugins/AIEditorAssistant/Source/AIEditorAssistant/Private/Chat/Widgets/SAIEditorAssistantConversationView.cpp\" \"E:/Ft/Plugins/AIEditorAssistant/Source/AIEditorAssistant/Private/Chat/Widgets/SAIEditorAssistantConversationView.cpp\")",
+      "Bash(cp \"F:/OpenCode/UE5AIPlugin/UE5-AIGateway/Plugins/AIEditorAssistant/Source/AIEditorAssistant/Private/Chat/Widgets/SAIEditorAssistantComposer.cpp\" \"E:/Ft/Plugins/AIEditorAssistant/Source/AIEditorAssistant/Private/Chat/Widgets/SAIEditorAssistantComposer.cpp\")",
+      "Bash(E:/AngelscriptEngine/Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.exe FTEditor *)",
+      "Bash(cp \"F:/OpenCode/UE5AIPlugin/UE5-AIGateway/Plugins/AIEditorAssistant/Source/AIEditorAssistant/Private/Chat/Markdown/AIEditorAssistantMarkdownRichTextRenderer.cpp\" \"E:/Ft/Plugins/AIEditorAssistant/Source/AIEditorAssistant/Private/Chat/Markdown/AIEditorAssistantMarkdownRichTextRenderer.cpp\")",
+      "Bash(cp F:/OpenCode/UE5AIPlugin/UE5-AIGateway/Plugins/AIEditorAssistant/Source/AIEditorAssistant/Private/Chat/Model/AIEditorAssistantChatTypes.h E:/Ft/Plugins/AIEditorAssistant/Source/AIEditorAssistant/Private/Chat/Model/AIEditorAssistantChatTypes.h)",
+      "Bash(cp F:/OpenCode/UE5AIPlugin/UE5-AIGateway/Plugins/AIEditorAssistant/Source/AIEditorAssistant/Private/Chat/Services/AIEditorAssistantChatService.h E:/Ft/Plugins/AIEditorAssistant/Source/AIEditorAssistant/Private/Chat/Services/AIEditorAssistantChatService.h)",
+      "Bash(cp F:/OpenCode/UE5AIPlugin/UE5-AIGateway/Plugins/AIEditorAssistant/Source/AIEditorAssistant/Private/Chat/Services/AIEditorAssistantChatService.cpp E:/Ft/Plugins/AIEditorAssistant/Source/AIEditorAssistant/Private/Chat/Services/AIEditorAssistantChatService.cpp)",
+      "Bash(cp F:/OpenCode/UE5AIPlugin/UE5-AIGateway/Plugins/AIEditorAssistant/Source/AIEditorAssistant/Private/Chat/Controller/AIEditorAssistantChatController.h E:/Ft/Plugins/AIEditorAssistant/Source/AIEditorAssistant/Private/Chat/Controller/AIEditorAssistantChatController.h)",
+      "Bash(cp F:/OpenCode/UE5AIPlugin/UE5-AIGateway/Plugins/AIEditorAssistant/Source/AIEditorAssistant/Private/Chat/Controller/AIEditorAssistantChatController.cpp E:/Ft/Plugins/AIEditorAssistant/Source/AIEditorAssistant/Private/Chat/Controller/AIEditorAssistantChatController.cpp)",
+      "Bash(cp \"F:/OpenCode/UE5AIPlugin/UE5-AIGateway/Plugins/AIEditorAssistant/Source/AIEditorAssistant/Private/SAIEditorAssistantChatPanel.cpp\" \"E:/Ft/Plugins/AIEditorAssistant/Source/AIEditorAssistant/Private/SAIEditorAssistantChatPanel.cpp\")",
+      "Bash(cp \"F:/OpenCode/UE5AIPlugin/UE5-AIGateway/Plugins/AIEditorAssistant/Source/AIEditorAssistant/Public/SAIEditorAssistantChatPanel.h\" \"E:/Ft/Plugins/AIEditorAssistant/Source/AIEditorAssistant/Public/SAIEditorAssistantChatPanel.h\")"
+    ]
+  }
+}
